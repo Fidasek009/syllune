@@ -266,12 +266,13 @@ async function probe() {
 				await waitForPdf(
 					() =>
 						view.evaluate<boolean>(
-							"Array.from(document.querySelectorAll('#status button')).some(button=>button.textContent==='Choose file instead')",
+							"Array.from(document.querySelectorAll('#status button')).some(button=>button.textContent==='Allow and open PDF'||button.textContent==='Choose PDF')",
 						),
 					Boolean,
 				)
+				// Unpacked extensions can have file access enabled; take the picker path.
 				await view.evaluate(
-					"Array.from(document.querySelectorAll('#status button')).find(button=>button.textContent==='Choose file instead').click()",
+					"Array.from(document.querySelectorAll('#status button')).find(button=>button.textContent==='Choose PDF instead')?.click()",
 				)
 				await waitForPdf(() => view.evaluate<boolean>("!!document.querySelector('#status input[type=file]')"), Boolean)
 				const document = await view.cdp<{ root: { nodeId: number } }>("DOM.getDocument")

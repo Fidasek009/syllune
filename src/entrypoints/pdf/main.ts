@@ -36,7 +36,11 @@ let allowStart = true
 let indexing = true
 const indexed = Promise.withResolvers<void>()
 void indexed.promise.catch(() => {})
+// Playback waits for a visible preview so a failed open never plays into the void.
+const previewReady = Promise.withResolvers<void>()
+void previewReady.promise.catch(() => {})
 const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
+let initialSelection: ReadingDocument | undefined
 let pendingSelection: ReadingDocument | undefined
 let pendingSelectionKey: string | undefined
 function captureSelection() {
@@ -194,9 +198,9 @@ async function start(mode: "article" | "selection", initial?: ReadingDocument) {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
 	const started = await session.start(async () => {
-		const selected = initial ?? (mode === "selection" ? takeSelection() : undefined)
+		await (mode === "selection" ? previewReady.promise : indexed.promise)
+		const selected = initial ?? (mode === "selection" ? (initialSelection ?? takeSelection()) : undefined)
 		if (mode === "selection" && !selected) throw new Error("Select some PDF text first.")
-		if (!selected) await indexed.promise
 		const scope = selected ?? complete
 		if (!scope.text.trim()) throw new Error("This PDF has no readable text layer.")
 		return scope
@@ -405,7 +409,6 @@ async function load() {
 	const url = new URL(raw)
 	if (!["https:", "http:", "file:"].includes(url.protocol)) throw new Error("This PDF address is not supported.")
 	await ownTab
-	let initial: ReadingDocument | undefined
 	if (params.has("source") && tabId !== undefined) {
 		const stored = await browser.storage.session.get(readingKeys.pdfReaders)
 		if (parsePdfReaders(stored[readingKeys.pdfReaders])[tabId] !== Number(params.get("source"))) {
@@ -423,8 +426,11 @@ async function load() {
 		pendingSelectionKey = undefined
 		if (typeof stored[name] !== "string" || !stored[name].trim())
 			throw new Error("The PDF selection is no longer available. Select it in this reader and try again.")
-		initial = normalizeDocument({ text: stored[name], runs: [] }, true)
-		if (allowStart && alive) await start("selection", initial)
+		initialSelection = normalizeDocument({ text: stored[name], runs: [] }, true)
+		if (allowStart && alive)
+			void start("selection", initialSelection).catch((error: unknown) => {
+				if (alive) status.textContent = error instanceof Error ? error.message : "This PDF could not be read."
+			})
 	}
 	GlobalWorkerOptions.workerSrc = new URL("/pdf-runtime/pdf.worker.mjs", location.href).href
 	let bytes: Uint8Array<ArrayBuffer> | undefined
@@ -550,26 +556,33 @@ async function load() {
 		invalidateSelectionIndex(complete)
 		renderers.set(section, state)
 		observer.observe(section)
+		if (n === 1) {
+			// Playback may begin once the opening page is real on screen; a text-layer
+			// failure still leaves the rendered page usable.
+			await ensureText(state).catch(() => {})
+			previewReady.resolve()
+		}
 	}
 	complete = normalizeDocument(result, true)
 	indexing = false
 	indexed.resolve()
 	status.textContent = ""
 	status.setAttribute("aria-live", "polite")
-	if (initial && session.source === initial && frame && alive) {
+	if (initialSelection && session.source === initialSelection && frame && alive) {
 		try {
-			nativeMapping = mapNativeSelection(complete, initial.text)
+			nativeMapping = mapNativeSelection(complete, initialSelection.text)
 			if (currentHighlight)
 				await window.readAloudHost?.({ session: session.id, command: "highlight", ...currentHighlight })
 		} catch {
 			status.textContent = "Highlighting is unavailable for this selection."
 		}
 	}
-	if (!initial && allowStart && alive) await start("article")
+	if (!initialSelection && allowStart && alive) await start("article")
 }
 
 void load().catch((error) => {
 	indexed.reject(error)
+	previewReady.reject(error)
 	status.setAttribute("aria-live", "polite")
 	if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
 	if (!alive) return

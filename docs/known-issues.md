@@ -1,14 +1,15 @@
 # Known issues
 
-## Firefox/Zen: opening an already-open local PDF may require choosing the file again
+## Opening an already-open local PDF may require choosing the file
 
-Last reviewed: **2026-11-04**.
+Last reviewed: **2026-11-14**.
 
-When Syllune opens its reader for a local PDF, it already knows the file URL and tries to read it directly. In tested Firefox/Zen builds, that request is blocked. Knowing the file's location does not give the extension access to its bytes. The fallback asks you to choose the same PDF again; the browser then provides a readable `File` object. The file stays on your device and is not uploaded.
+When Syllune opens its reader for a local PDF, it already knows the file URL and tries to read it directly. Knowing the file's location does not give the extension access to its bytes.
 
-This is an unresolved limitation, not the intended reading experience. Firefox also prevents extensions from injecting code into its built-in PDF viewer, so we cannot retrieve the document through that viewer. A Mozilla report describes direct fetch/XHR failing even with both file host permission and local-file access granted. The report remains unconfirmed; we have not established that automatic access is permanently impossible or ruled out every alternative.
+- **Chrome** reads the file directly after **Allow access to file URLs** is enabled on Syllune's extension details page and the one-time file-host grant is accepted. Fresh installs have file access off; the browser exposes no API to turn that setting on, so Syllune cannot show a permission prompt for it. Once the setting is on, the reader offers a one-click grant and later local PDFs open directly.
+- **Firefox 153+** has a separate **Access local files on your computer** permission, also off by default. Requesting `file:///*` through `permissions.request()` does not grant it ([Firefox bug 2051082](https://bugzilla.mozilla.org/show_bug.cgi?id=2051082)). Tested Zen builds still blocked direct `fetch` after the permission was granted; that report remains unconfirmed, so direct reading may stay impossible there regardless of the toggle.
 
-Chrome supports direct access after **Allow access to file URLs** is enabled in the extension's settings. The extension attempts the known URL before offering a file chooser.
+When direct reading is blocked, the reader offers a file choice and, in Chrome, a link to Syllune's extension settings where the switch can be enabled once. Chrome applies that change after a restart; afterwards local PDFs open with a single grant click. A chosen file is provided by the browser as a readable `File` object, stays on your device, and is not uploaded. No prompt, manifest entry, or enterprise policy can grant file access up front — force-installed extensions still report `isAllowedFileSchemeAccess()` as false ([Chromium issue 577461554](https://issues.chromium.org/issues/577461554)). Firefox also prevents extensions from injecting code into its built-in PDF viewer, so the document cannot be retrieved through that viewer.
 
 References: [Mozilla file-access issue 2085199](https://bugzilla.mozilla.org/show_bug.cgi?id=2085199), [Firefox PDF-viewer restrictions](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Content_scripts#limitations), [file-picker restrictions](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/file#notes), and [Chrome file-access settings](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions#allow-access).
 

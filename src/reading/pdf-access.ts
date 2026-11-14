@@ -6,21 +6,24 @@ function askAccess({
 	signal,
 	message,
 	label,
+	fallback,
 	request,
-	allowFileChoice = false,
 }: {
 	status: HTMLElement
 	signal: AbortSignal
 	message: string
 	label: string
+	fallback?: string
 	request: (explain: (message: string) => void) => Promise<Response | undefined>
-	allowFileChoice?: boolean
 }): Promise<Response | undefined> {
 	signal.throwIfAborted()
 	const explanation = document.createTextNode(message)
 	const allow = document.createElement("button")
 	allow.textContent = label
-	status.replaceChildren(explanation, " ", allow)
+	const actions = document.createElement("span")
+	actions.className = "status-actions"
+	actions.append(allow)
+	status.replaceChildren(explanation, actions)
 	return new Promise((resolve, reject) => {
 		const abort = () => {
 			cleanup()
@@ -33,13 +36,14 @@ function askAccess({
 		const cleanup = () => {
 			signal.removeEventListener("abort", abort)
 			allow.onclick = null
-			if (fallback) fallback.onclick = null
+			if (alternative) alternative.onclick = null
 		}
-		const fallback = allowFileChoice ? document.createElement("button") : undefined
+		let alternative: HTMLButtonElement | undefined
 		if (fallback) {
-			fallback.textContent = "Choose file instead"
-			fallback.onclick = () => finish(undefined)
-			status.append(" ", fallback)
+			alternative = document.createElement("button")
+			alternative.textContent = fallback
+			alternative.onclick = () => finish(undefined)
+			actions.append(alternative)
 		}
 		signal.addEventListener("abort", abort, { once: true })
 		allow.onclick = () => {
@@ -63,18 +67,41 @@ function askAccess({
 
 async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Response> {
 	signal.throwIfAborted()
-	status.textContent =
+	const explanation = document.createElement("span")
+	explanation.textContent =
 		import.meta.env.BROWSER === "firefox"
-			? "Firefox could not read this local file directly. Choose this PDF to read it on your device."
-			: "Choose this PDF to open it locally."
+			? "Firefox cannot read local PDFs directly. Choose this PDF to read it here."
+			: "Chrome needs a one-time setting to open local PDFs directly. Choose this PDF to read it now."
 	const input = document.createElement("input")
 	input.type = "file"
 	input.accept = "application/pdf,.pdf"
 	input.setAttribute("aria-label", "Choose PDF")
-	status.append(" ", input)
+	input.hidden = true
+	const choose = document.createElement("button")
+	choose.textContent = "Choose PDF"
+	choose.onclick = () => input.click()
+	const actions = document.createElement("span")
+	actions.className = "status-actions"
+	actions.append(choose)
+	status.replaceChildren(explanation, actions, input)
+	let settings: HTMLButtonElement | undefined
+	if (import.meta.env.BROWSER !== "firefox") {
+		settings = document.createElement("button")
+		settings.textContent = "Open settings"
+		settings.onclick = () => {
+			void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}` }).catch(() => undefined)
+			explanation.textContent = "Turn on “Allow access to file URLs”, then reopen this PDF to open local PDFs directly."
+		}
+		actions.append(settings)
+	}
+	const stop = () => {
+		input.onchange = null
+		choose.onclick = null
+		if (settings) settings.onclick = null
+	}
 	const file = await new Promise<File>((resolve, reject) => {
 		const abort = () => {
-			input.onchange = null
+			stop()
 			reject(signal.reason)
 		}
 		signal.addEventListener("abort", abort, { once: true })
@@ -82,7 +109,7 @@ async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Res
 			const selected = input.files?.[0]
 			if (!selected) return
 			signal.removeEventListener("abort", abort)
-			input.onchange = null
+			stop()
 			resolve(selected)
 		}
 	})
@@ -98,36 +125,37 @@ async function localPdf(url: URL, signal: AbortSignal, status: HTMLElement): Pro
 	} catch {
 		signal.throwIfAborted()
 	}
-	if (import.meta.env.BROWSER !== "firefox") {
+	if (import.meta.env.BROWSER !== "firefox" && (await browser.extension.isAllowedFileSchemeAccess())) {
+		// Chrome only accepts the optional file host grant after the user enabled
+		// file access in its settings; then one click persists direct opening.
 		const response = await askAccess({
 			status,
 			signal,
-			message: "Allow local file access to open this PDF directly.",
-			label: "Allow local file access",
+			message: "Allow Syllune to read local PDFs directly?",
+			label: "Allow and open PDF",
+			fallback: "Choose PDF instead",
 			async request(explain) {
-				const granted = await browser.permissions.request({ origins: ["file:///*"] })
-				if (!granted) return undefined
+				if (!(await browser.permissions.request({ origins: ["file:///*"] }))) {
+					explain("Local PDF access was not granted.")
+					return undefined
+				}
 				try {
 					const response = await read()
 					if (response.ok) return response
 				} catch {
 					signal.throwIfAborted()
 				}
-				const allowed = await browser.extension.isAllowedFileSchemeAccess()
-				explain(
-					allowed
-						? "The browser blocked reading this local file directly."
-						: "Enable local file access for Syllune in your browser's extension settings, then try again.",
-				)
+				explain("The browser could not read this PDF.")
 				return undefined
 			},
-			allowFileChoice: true,
 		})
 		if (response) {
 			status.textContent = "Opening PDF…"
 			return response
 		}
 	}
+	// Local-file access itself is a manual browser setting. Without it, offer the
+	// file the browser can share.
 	return chooseFile(status, signal)
 }
 
