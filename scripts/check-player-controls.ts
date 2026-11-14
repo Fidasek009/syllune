@@ -175,7 +175,7 @@ async function verifyVolume() {
 	}
 }
 
-async function verifySpeedPanel(verifyRestart = false) {
+async function verifySpeedPanel(verifyLiveAdjustment = false) {
 	const bar = document.querySelector<HTMLElement>("#bar")
 	const rate = document.querySelector<HTMLButtonElement>("#rate")
 	const panel = document.querySelector<HTMLElement>("#speed-panel")
@@ -194,26 +194,25 @@ async function verifySpeedPanel(verifyRestart = false) {
 	const rect = panel.getBoundingClientRect()
 	if (rect.top < barHeight + 7 || rect.bottom > innerHeight || bar.getBoundingClientRect().height !== barHeight)
 		throw new Error("Speed panel enlarged the bar or clipped")
-	if (verifyRestart) {
+	if (verifyLiveAdjustment) {
 		const speed = document.querySelector<HTMLInputElement>("#speed")!
-		const sound = document.querySelector<HTMLButtonElement>("#sound")!
-		// A committed adjustment must dismiss before disabling its focused slider.
-		// Keep the same value so following scenarios retain their chosen rate.
+		// Committing the current rate must keep the live control usable and focused.
+		speed.dispatchEvent(new Event("input"))
 		speed.dispatchEvent(new Event("change"))
-		if (panel.matches(":popover-open") || document.activeElement !== sound || sound.disabled || !speed.disabled)
-			throw new Error("Preparing speech stranded focus in the speed popover")
-		const prepared = performance.now() + 90_000
-		while (speed.disabled && performance.now() < prepared) await new Promise((resolve) => setTimeout(resolve, 25))
-		if (speed.disabled) throw new Error("Speed preparation did not finish")
-	} else panel.hidePopover()
-	return { focusPreserved: verifyRestart, floating: true, barHeightUnchanged: true, sliderFocused: true }
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		if (!panel.matches(":popover-open") || document.activeElement !== speed || speed.disabled || rate.disabled)
+			throw new Error("Speed adjustment dismissed or disabled the live slider")
+	}
+	panel.hidePopover()
+	return { focusPreserved: verifyLiveAdjustment, floating: true, barHeightUnchanged: true, sliderFocused: true }
 }
 
 function failPlayback() {
+	const voice = document.querySelector<HTMLSelectElement>("#voice")
+	if (!voice || voice.disabled || !voice.value) throw new Error("Playback voice control is unavailable")
 	document.body.setAttribute("data-probe-fail-buffer", "")
-	const speed = document.querySelector<HTMLInputElement>("#speed")
-	if (!speed) throw new Error("Playback speed control is missing")
-	speed.dispatchEvent(new Event("change"))
+	// Reprepare the current voice so the next output fails even when paused with buffered clips.
+	voice.dispatchEvent(new Event("change"))
 }
 
 // Drivers still consume expressions, but every assertion above is checked by TypeScript.
