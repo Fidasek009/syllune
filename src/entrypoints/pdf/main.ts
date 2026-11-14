@@ -18,7 +18,7 @@ import { normalizeDocument } from "../../reading/normalize.ts"
 import { fetchPdf } from "../../reading/pdf-access.ts"
 import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
 import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
-import { nativeSelectionMapping, selectRange, sliceDocument } from "../../reading/selection.ts"
+import { selectRange, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
 import { parsePdfReaders, readingKeys } from "../../reading/state.ts"
 import "pdfjs-dist/web/pdf_viewer.css"
@@ -33,13 +33,13 @@ const zoomLevel = document.querySelector<HTMLSpanElement>("#zoom-level")!
 const params = new URLSearchParams(location.search)
 const highlightKey = currentWordHighlight
 const session = new ReaderSession<ReadingDocument>()
-let nativeMapping: ReturnType<typeof nativeSelectionMapping> | undefined
 let frame: HTMLIFrameElement | undefined
 let tabId: number | undefined
 let alive = true
 let allowStart = true
-let initialSelection: ReadingDocument | undefined
+let initialSelection: string | undefined
 let pendingSelection: ReadingDocument | undefined
+let pendingWholeDocument = false
 let pendingSelectionKey: string | undefined
 const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
 
@@ -48,7 +48,7 @@ const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
 const documentReady = Promise.withResolvers<PDFDocumentProxy>()
 void documentReady.promise.catch(() => {})
 // A native-viewer handoff is playable only after its printed region is located.
-const selectionLocated = Promise.withResolvers<void>()
+const selectionLocated = Promise.withResolvers<ReadingDocument>()
 void selectionLocated.promise.catch(() => {})
 
 interface PdfTextRun extends TextRun {
@@ -222,39 +222,74 @@ function pageAt(node: Node | null): PageState | undefined {
 	return section ? renderers.get(section) : undefined
 }
 
-function selectedDocument(range: Range): ReadingDocument {
+function pageBounds(range: Range) {
+	let from: number | undefined
+	let to: number | undefined
+	for (const state of pageStates) {
+		if (!range.intersectsNode(state.section)) continue
+		from ??= state.number
+		to = state.number
+	}
+	return from === undefined || to === undefined ? undefined : { from, to }
+}
+
+function selectedDocument(range: Range): ReadingDocument | undefined {
 	const first = pageAt(range.startContainer)
 	const last = pageAt(range.endContainer)
-	if (!first || !last) throw new Error("Select some PDF text first.")
-	const from = Math.min(first.number, last.number)
-	const to = Math.max(first.number, last.number)
-	return normalizeDocument(selectRange(pageDocuments(from, to), range), true)
+	const bounds =
+		first && last
+			? { from: Math.min(first.number, last.number), to: Math.max(first.number, last.number) }
+			: pageBounds(range)
+	if (!bounds) return undefined
+	return normalizeDocument(selectRange(pageDocuments(bounds.from, bounds.to), range), true)
 }
 
 function captureSelection() {
 	const selection = getSelection()
 	if (!selection?.toString().trim() || !selection.rangeCount) return
+	const range = selection.getRangeAt(0)
 	try {
-		pendingSelection = selectedDocument(selection.getRangeAt(0))
+		pendingSelection = selectedDocument(range)
+		// Ctrl+A selects the page container, not a page. Reading the whole document
+		// is still what the user asked for, so route it through article preparation.
+		pendingWholeDocument = !pendingSelection && range.intersectsNode(pages)
 	} catch {
 		pendingSelection = undefined
+		pendingWholeDocument = false
 	}
 }
 function takeSelection(): ReadingDocument | undefined {
 	const selection = getSelection()
-	const captured =
-		selection?.toString().trim() && selection.rangeCount ? selectedDocument(selection.getRangeAt(0)) : pendingSelection
+	let captured = pendingSelection
+	if (selection?.toString().trim() && selection.rangeCount) {
+		try {
+			captured = selectedDocument(selection.getRangeAt(0))
+		} catch {
+			captured = undefined
+		}
+	}
 	pendingSelection = undefined
 	selection?.removeAllRanges()
 	return captured
 }
+function takeWholeDocumentSelection() {
+	const whole = pendingWholeDocument
+	pendingWholeDocument = false
+	return whole
+}
 document.addEventListener("selectionchange", captureSelection)
 pages.addEventListener("contextmenu", captureSelection)
 pages.addEventListener("pointerdown", (event) => {
-	if (event.button === 0) pendingSelection = undefined
+	if (event.button === 0) {
+		pendingSelection = undefined
+		pendingWholeDocument = false
+	}
 })
 document.addEventListener("keydown", (event) => {
-	if (event.key === "Escape" || event.key.startsWith("Arrow")) pendingSelection = undefined
+	if (event.key === "Escape" || event.key.startsWith("Arrow")) {
+		pendingSelection = undefined
+		pendingWholeDocument = false
+	}
 })
 
 function setPageMetrics(section: HTMLElement, viewport: PageState["viewport"], scale: number) {
@@ -326,8 +361,8 @@ function zoomTo(value: number) {
 }
 
 function clearMapping() {
-	nativeMapping = undefined
 	pendingSelection = undefined
+	pendingWholeDocument = false
 	CSS.highlights?.delete(highlightKey)
 }
 
@@ -342,7 +377,7 @@ function describe(error: unknown) {
 	return error instanceof Error ? error.message : "This PDF could not be read."
 }
 
-async function start(mode: "article" | "selection", initial?: ReadingDocument): Promise<boolean> {
+async function start(mode: "article" | "selection", initial?: string): Promise<boolean> {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
 	const started = await session.start(async () => {
@@ -351,16 +386,13 @@ async function start(mode: "article" | "selection", initial?: ReadingDocument): 
 			if (!source.text.trim()) throw new Error("This PDF has no readable text layer.")
 			return source
 		}
-		if (initial) {
-			await selectionLocated.promise
-			return initial
-		}
+		if (initial) return selectionLocated.promise
 		const selected = takeSelection()
 		if (!selected) throw new Error("Select some PDF text first.")
 		return selected
 	})
 	if (!started || !alive) return false
-	if (mode === "article" || !initial) clearMapping()
+	clearMapping()
 	status.textContent = ""
 	status.setAttribute("aria-live", "polite")
 	if (frame?.isConnected) {
@@ -385,8 +417,9 @@ async function handleCommand(command: PdfCommand) {
 		frame.focus()
 		return
 	}
-	const reading = start(command.mode)
-	if (command.mode === "article" && !articleBuilt) {
+	const whole = command.mode === "selection" && takeWholeDocumentSelection()
+	const reading = start(whole ? "article" : command.mode)
+	if ((command.mode === "article" || whole) && !articleBuilt) {
 		// Accept preparation without holding the background's routing lock until
 		// indexing finishes. A newer selection/stop can invalidate this request.
 		void reading.catch((error: unknown) => {
@@ -435,15 +468,14 @@ window.readAloudHost = createReaderDispatcher({
 		if (size.width !== undefined) controls.style.maxWidth = `${size.width}px`
 	},
 	async highlight(start, end) {
-		const printed = nativeMapping?.document ?? session.source
-		const bounds = nativeMapping ? nativeMapping.range(start, end) : { start, end }
-		if (!bounds || !printed) {
+		const printed = session.source
+		if (!printed) {
 			paintReaderHighlight(null)
 			return
 		}
 		const current = session.revision
 		try {
-			for (const run of overlappingRuns(printed, bounds.start, bounds.end)) {
+			for (const run of overlappingRuns(printed, start, end)) {
 				const page = owners.get(run.node)
 				if (page) await ensureText(page)
 			}
@@ -452,7 +484,7 @@ window.readAloudHost = createReaderDispatcher({
 			throw new Error("Could not highlight this page. Playback continues.")
 		}
 		if (!session.isCurrent(current) || !alive || !frame) return
-		paintReaderHighlight(sourceRange(printed, bounds.start, bounds.end))
+		paintReaderHighlight(sourceRange(printed, start, end))
 	},
 })
 
@@ -597,21 +629,20 @@ async function fillPageShells() {
 	}
 }
 
-function scrollToSelected(scope: ReadingDocument, mapping: ReturnType<typeof nativeSelectionMapping>, length: number) {
-	const bounds = mapping.range(0, length)
-	const range = bounds ? sourceRange(scope, bounds.start, bounds.end) : null
+function scrollToSelected(scope: ReadingDocument) {
+	const range = sourceRange(scope, 0, 1)
 	const rect = range?.getClientRects()[0] ?? range?.getBoundingClientRect()
 	if (rect) scrollBy({ top: rect.top - innerHeight * 0.35, behavior: "instant" })
 }
 
-async function locateInitialSelection(selection: ReadingDocument, revision: number) {
+async function locateInitialSelection(selection: string, revision: number) {
 	const pdf = await documentReady.promise
-	const search = new PdfSelectionSearch(selection.text)
+	const search = new PdfSelectionSearch(selection)
 	status.setAttribute("aria-live", "off")
 	try {
 		for (let number = 1; number <= pdf.numPages; number++) {
 			if (!alive || !session.isCurrent(revision)) {
-				selectionLocated.resolve()
+				selectionLocated.resolve({ text: "", runs: [] })
 				return
 			}
 			status.textContent = `Finding your selection · ${number} of ${pdf.numPages}`
@@ -625,7 +656,13 @@ async function locateInitialSelection(selection: ReadingDocument, revision: numb
 			}
 			const from = match.startPage + 1
 			const to = match.endPage + 1
-			for (let page = from; page <= to; page++) await ensureText(await pageThrough(page))
+			try {
+				for (let page = from; page <= to; page++) await ensureText(await pageThrough(page))
+			} catch (cause) {
+				throw new Error("This selection could not be prepared for highlighting. Reload the PDF and try again.", {
+					cause,
+				})
+			}
 			const parts: ReadingDocument[] = []
 			let end = match.end
 			for (let page = from; page <= to; page++) {
@@ -633,17 +670,17 @@ async function locateInitialSelection(selection: ReadingDocument, revision: numb
 				if (page < to) end += part.text.length
 				parts.push(part)
 			}
-			const scope = sliceDocument(concatDocuments(parts), match.start, end)
-			const mapping = nativeSelectionMapping(scope, selection.text)
+			// The located printed span is the only reading source. Speaking the native
+			// copy while highlighting the printed text lets the two drift apart.
+			const scope = normalizeDocument(sliceDocument(concatDocuments(parts), match.start, end), true)
 			if (!session.isCurrent(revision) || !alive) {
-				selectionLocated.resolve()
+				selectionLocated.resolve({ text: "", runs: [] })
 				return
 			}
-			nativeMapping = mapping
-			scrollToSelected(scope, mapping, selection.text.length)
+			scrollToSelected(scope)
 			status.textContent = ""
 			status.setAttribute("aria-live", "polite")
-			selectionLocated.resolve()
+			selectionLocated.resolve(scope)
 			return
 		}
 		selectionLocated.reject(
@@ -680,7 +717,7 @@ async function load() {
 		pendingSelectionKey = undefined
 		if (typeof stored[name] !== "string" || !stored[name].trim())
 			throw new Error("The PDF selection is no longer available. Select it in this reader and try again.")
-		initialSelection = normalizeDocument({ text: stored[name], runs: [] }, true)
+		initialSelection = stored[name]
 		if (allowStart && alive) {
 			const reading = start("selection", initialSelection)
 			locationRevision = session.revision

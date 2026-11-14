@@ -541,11 +541,16 @@ try {
 		20,
 	)
 	const pdfStatus = await waitFor(
-		() => script<string>("document.querySelector('#status').textContent"),
-		(value) => value === "" || !value.startsWith("Opening PDF"),
+		() =>
+			script<{ status: string; player: boolean }>(
+				"({status: document.querySelector('#status')?.textContent ?? '', player: !!document.querySelector('iframe')})",
+			),
+		({ status, player }) =>
+			(player && status === "") ||
+			(status.length > 0 && !/^(?:Opening PDF|Preparing text|Finding your selection)/u.test(status)),
 		90,
 	)
-	assert(!pdfStatus, `Firefox PDF fetch failed: ${pdfStatus}`)
+	assert(pdfStatus.player && !pdfStatus.status, `Firefox PDF fetch failed: ${pdfStatus.status}`)
 	const pdf = await script<{ pages: number; characters: number; highlighted: string }>(
 		pageScript(inspectPdf, "Virtual Research Environment"),
 	)

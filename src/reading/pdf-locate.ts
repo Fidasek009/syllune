@@ -36,10 +36,17 @@ export class PdfSelectionSearch {
 
 	push(pageText: string): LocatedPdfText | undefined {
 		const page = canonicalText(pageText)
+		// A layout hyphen at a page break continues the word when the next page does.
+		let joined = false
+		if (this.text.endsWith("- ") && /^\p{Ll}/u.test(page.value) && /\p{L}$/u.test(this.text.slice(0, -2))) {
+			this.text = this.text.slice(0, -2)
+			this.searchFrom = Math.max(0, this.searchFrom - 2)
+			joined = true
+		}
 		let base = this.text.length
 		// canonicalText keeps one trailing layout space; add a separator only when
 		// the page itself does not already provide one.
-		if (base && page.value && !this.text.endsWith(" ") && !page.value.startsWith(" ")) {
+		if (!joined && base && page.value && !this.text.endsWith(" ") && !page.value.startsWith(" ")) {
 			this.text += " "
 			base++
 		}

@@ -90,7 +90,8 @@ async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Res
 		settings.textContent = "Open settings"
 		settings.onclick = () => {
 			void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}` }).catch(() => undefined)
-			explanation.textContent = "Turn on “Allow access to file URLs”, then reopen this PDF to open local PDFs directly."
+			explanation.textContent =
+				"Turn on “Allow access to file URLs”. Chrome reloads Syllune when the switch changes, so reopen this PDF."
 		}
 		actions.append(settings)
 	}

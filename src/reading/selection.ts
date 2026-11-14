@@ -1,5 +1,5 @@
 import { overlappingRuns, type ReadingDocument } from "./document.ts"
-import { layoutHyphenation, normalizeDocument } from "./normalize.ts"
+import { pdfHyphenation } from "./normalize.ts"
 import { projectRun } from "./runs.ts"
 
 const nodeIndexes = new WeakMap<ReadingDocument, WeakMap<Text, { first: number; last: number }>>()
@@ -64,7 +64,7 @@ export function canonicalText(text: string) {
 		offset = 0
 	const positions: number[] = []
 	const ends: number[] = []
-	const removed = [...text.matchAll(layoutHyphenation)]
+	const removed = [...text.matchAll(pdfHyphenation)]
 	let removal = 0
 	for (const { segment: character } of graphemes.segment(text)) {
 		while (removed[removal] && offset >= removed[removal]!.index + removed[removal]![0].length) removal++
@@ -90,66 +90,4 @@ export function canonicalText(text: string) {
 	}
 	positions.push(text.length)
 	return { value, positions, ends }
-}
-
-/** Match a native PDF selection without reading beyond it or losing DOM offsets. */
-export function locateSelection(source: ReadingDocument, selection: string): ReadingDocument {
-	// Matching normalized text must also return normalized speech, not a raw slice.
-	source = normalizeDocument(source, true)
-	const haystack = canonicalText(source.text)
-	const needle = canonicalText(selection).value.trim()
-	if (!needle) throw new Error("Select some PDF text first.")
-	const match = haystack.value.indexOf(needle)
-	if (match < 0)
-		throw new Error("This selection could not be located in the PDF. Select it in this reader and try again.")
-	if (haystack.value.indexOf(needle, match + 1) >= 0)
-		throw new Error("This selection appears more than once. Select it in this reader to choose its exact location.")
-	const start = haystack.positions[match]!
-	const end = haystack.ends[match + needle.length - 1]!
-	return sliceDocument(source, start, end)
-}
-
-/**
- * Map native-viewer selection offsets onto a located printed scope.
- * Callers locate the selection first; this only translates native offsets to printed ones.
- */
-export function nativeSelectionMapping(printedSource: ReadingDocument, selection: string) {
-	const native = canonicalText(selection)
-	const printed = canonicalText(printedSource.text)
-	const needle = native.value.trim()
-	if (!needle) throw new Error("Select some PDF text first.")
-	const match = printed.value.indexOf(needle)
-	if (match < 0) throw new Error("The selection could not be mapped to the printed text.")
-	const boundary = (offset: number) => {
-		let low = 0,
-			high = native.positions.length
-		while (low < high) {
-			const middle = (low + high) >>> 1
-			if (native.positions[middle]! < offset) low = middle + 1
-			else high = middle
-		}
-		return Math.min(low, needle.length)
-	}
-	return {
-		document: printedSource,
-		range(start: number, end: number): { start: number; end: number } | null {
-			if (
-				!Number.isSafeInteger(start) ||
-				!Number.isSafeInteger(end) ||
-				start < 0 ||
-				end <= start ||
-				end > selection.length
-			)
-				return null
-			const first = boundary(start),
-				last = boundary(end) - 1
-			if (first > last || first >= needle.length) return null
-			return { start: printed.positions[match + first]!, end: printed.ends[match + last]! }
-		},
-	}
-}
-
-/** Map a native-viewer selection onto the full document, rejecting ambiguity. */
-export function mapNativeSelection(source: ReadingDocument, selection: string) {
-	return nativeSelectionMapping(locateSelection(source, selection), selection)
 }

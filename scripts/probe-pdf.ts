@@ -127,18 +127,11 @@ async function probe() {
 		console.log("PDF test grant:", JSON.stringify(await view.evaluate("chrome.permissions.getAll()")))
 		const navigationMs = performance.now() - started
 		await view.cdp("Page.bringToFront")
-		await waitForPdf(
-			() => view.evaluate<string>("document.querySelector('#status').textContent"),
-			(value) => value === "" || !value.startsWith("Opening PDF"),
-		)
-		const status = await view.evaluate<string>("document.querySelector('#status').textContent")
-		if (status) throw new Error(status)
-		const textReadyMs = performance.now() - started
-		console.log("PDF indexed:", JSON.stringify({ textReadyMs }))
 		if (Bun.env.PDF_SMOKE === "1") {
+			await waitForPdf(() => view.evaluate<boolean>("!!document.querySelector('.pdf-page[data-painted]')"), Boolean)
 			const pages = await view.evaluate<number>("document.querySelectorAll('.pdf-page').length")
 			if (pages < 1) throw new Error("The PDF has no pages")
-			await waitForPdf(() => view.evaluate<boolean>("!!document.querySelector('.pdf-page[data-painted]')"), Boolean)
+			const firstPageMs = performance.now() - started
 			const zoom = await view.evaluate<PdfZoomResult>(checkPdfZoom)
 			if (
 				!(zoom.button > zoom.before && zoom.level === "125%") ||
@@ -147,9 +140,21 @@ async function probe() {
 				Math.abs(zoom.reset - zoom.before) > 1
 			)
 				throw new Error(`PDF zoom failed: ${JSON.stringify(zoom)}`)
-			console.log(JSON.stringify({ source, pages, textReadyMs, zoom }))
+			console.log(JSON.stringify({ source, pages, firstPageMs, zoom }))
 			return
 		}
+		const ready = await waitForPdf(
+			() =>
+				view.evaluate<{ status: string; player: boolean }>(
+					"({status: document.querySelector('#status')?.textContent ?? '', player: !!document.querySelector('iframe')})",
+				),
+			({ status, player }) =>
+				(player && status === "") ||
+				(status.length > 0 && !/^(?:Opening PDF|Preparing text|Finding your selection)/u.test(status)),
+		)
+		if (!ready.player || ready.status) throw new Error(ready.status || "The PDF player did not open")
+		const articleReadyMs = performance.now() - started
+		console.log("PDF article ready:", JSON.stringify({ articleReadyMs }))
 		const result = await view.evaluate<Awaited<ReturnType<typeof inspectPdf>>>(
 			pageScript(inspectPdf, "Virtual Research Environment"),
 		)
@@ -222,8 +227,11 @@ async function probe() {
 			firstBufferMs = performance.now() - selectionStarted
 		}
 		await waitFor(
-			() => view.evaluate<string>("document.querySelector('#status').textContent"),
-			(value) => value === "" || !value.startsWith("Opening PDF"),
+			() =>
+				view.evaluate<boolean>(
+					"document.querySelector('#status')?.textContent === '' && !!document.querySelector('iframe')",
+				),
+			Boolean,
 		)
 		const mapped = await view.evaluate<string>(
 			pageScript(highlightPdfText, speechCheck ? "This work was supported" : "nevertheless", speechCheck ? 4 : 12),
@@ -244,10 +252,10 @@ async function probe() {
 			firstBufferMs,
 			speech,
 			navigationMs,
-			textReadyMs,
+			articleReadyMs,
 			articleChecksElapsedMs,
 			timingScope:
-				"textReadyMs measures initial indexing; articleChecksElapsedMs includes article/selection regression checks and is not startup latency.",
+				"articleReadyMs measures the whole-PDF reading scope opening the player; articleChecksElapsedMs includes article/selection regression checks and is not startup latency.",
 			limits: speechCheck
 				? "Test-only host grant, cached MUNI PDF and pinned cached English model; actual CPU worker PCM and word timing validation across the acknowledgement/abstract page boundary. Does not validate physical audio quality, hardware GPU behavior, or target-device latency."
 				: "Checks missing-permission recovery, privileged fetch without CORS, rendering, text mapping, and the installed context-menu handler's close/reopen path with Tab.url omitted. Uses a test-only origin grant; native menu UI, activeTab grant, permission dialog, and speech are not covered.",
@@ -263,39 +271,45 @@ async function probe() {
 				`chrome-extension://${id}/pdf.html?src=${encodeURIComponent(Bun.pathToFileURL(`${root}/.cache/benchmarks/muni-thesis.pdf`).href)}`,
 			)
 			if (Bun.env.PDF_DIRECT_LOCAL !== "1") {
-				await waitForPdf(
+				const recovery = await waitForPdf(
 					() =>
-						view.evaluate<boolean>(
-							"Array.from(document.querySelectorAll('#status button')).some(button=>button.textContent==='Allow and open PDF'||button.textContent==='Choose PDF')",
+						view.evaluate<string>(
+							"document.querySelector('.pdf-page') ? 'direct' : Array.from(document.querySelectorAll('#status button')).some(button=>button.textContent==='Choose PDF'||button.textContent==='Choose PDF instead') ? 'picker' : ''",
 						),
-					Boolean,
+					(value) => value !== "",
 				)
-				// Unpacked extensions can have file access enabled; take the picker path.
-				await view.evaluate(
-					"Array.from(document.querySelectorAll('#status button')).find(button=>button.textContent==='Choose PDF instead')?.click()",
-				)
-				await waitForPdf(() => view.evaluate<boolean>("!!document.querySelector('#status input[type=file]')"), Boolean)
-				const document = await view.cdp<{ root: { nodeId: number } }>("DOM.getDocument")
-				const input = await view.cdp<{ nodeId: number }>("DOM.querySelector", {
-					nodeId: document.root.nodeId,
-					selector: "input[type=file]",
-				})
-				await view.cdp("DOM.setFileInputFiles", {
-					nodeId: input.nodeId,
-					files: [`${root}/.cache/benchmarks/muni-thesis.pdf`],
-				})
+				// Unpacked extensions can have file access enabled and already hold the
+				// grant, so direct reading is also a valid outcome for this path.
+				if (recovery === "picker") {
+					await view.evaluate(
+						"Array.from(document.querySelectorAll('#status button')).find(button=>button.textContent==='Choose PDF'||button.textContent==='Choose PDF instead')?.click()",
+					)
+					await waitForPdf(
+						() => view.evaluate<boolean>("!!document.querySelector('#status input[type=file]')"),
+						Boolean,
+					)
+					const document = await view.cdp<{ root: { nodeId: number } }>("DOM.getDocument")
+					const input = await view.cdp<{ nodeId: number }>("DOM.querySelector", {
+						nodeId: document.root.nodeId,
+						selector: "input[type=file]",
+					})
+					await view.cdp("DOM.setFileInputFiles", {
+						nodeId: input.nodeId,
+						files: [`${root}/.cache/benchmarks/muni-thesis.pdf`],
+					})
+				}
 			}
 			await waitForPdf(
 				() =>
 					view.evaluate<boolean>(
-						"document.querySelector('#status').textContent==='' && document.querySelectorAll('.pdf-page').length===60",
+						"document.querySelector('#status').textContent==='' && document.querySelectorAll('.pdf-page').length===60 && !!document.querySelector('iframe')",
 					),
 				Boolean,
 			)
 			console.log(
 				Bun.env.PDF_DIRECT_LOCAL === "1"
 					? "Local PDF opened directly without a file chooser."
-					: "Local PDF fallback opened from a user-selected File.",
+					: "Local PDF fallback opened from a user-selected File or a direct grant.",
 			)
 		}
 	} finally {

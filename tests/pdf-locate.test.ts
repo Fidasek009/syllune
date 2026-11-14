@@ -30,6 +30,18 @@ test("paginated selection search matches canonical ligatures and whitespace", ()
 	expect(search.push("The oﬃce   café\n")).toEqual({ startPage: 0, start: 0, endPage: 0, end: 15 })
 })
 
+test("paginated selection search joins a word hyphenated across a page break", () => {
+	const search = new PdfSelectionSearch("Their day-to-day use is nevertheless constrained by four limitations.")
+	expect(search.push("Their day-to-day use is nev-\n\n")).toBeUndefined()
+	const continuation = "ertheless constrained by four limitations."
+	expect(search.push(continuation + "\n")).toEqual({
+		startPage: 0,
+		start: 0,
+		endPage: 1,
+		end: continuation.length,
+	})
+})
+
 test("paginated selection search never invents a match", () => {
 	const search = new PdfSelectionSearch("Missing paragraph.")
 	expect(search.push("Only this paragraph exists.\n")).toBeUndefined()

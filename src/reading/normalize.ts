@@ -4,10 +4,12 @@ import { projectRun } from "./runs.ts"
 
 /** Only explicit line breaks authorize removing a printed hyphen. */
 export const layoutHyphenation = /(?<=\p{L})[-\u00ad][\t ]*\r?\n[\t ]*(?=\p{Ll})|\u00ad/gu
+/** PDF pages end with a blank line, so a page-break word continues across more than one newline. */
+export const pdfHyphenation = /(?<=\p{L})[-\u00ad][\t ]*(?:\r?\n)+[\t ]*(?=\p{Ll})|\u00ad/gu
 
 /** Remove layout hyphenation without changing the DOM offsets used for highlighting. */
 export function normalizeDocument(source: ReadingDocument, pdf = false): ReadingDocument {
-	const pattern = pdf ? new RegExp(`${layoutHyphenation.source}|(?<!\\n)\\n(?!\\n)`, "gu") : layoutHyphenation
+	const pattern = pdf ? new RegExp(`${pdfHyphenation.source}|(?<!\\n)\\n(?!\\n)`, "gu") : layoutHyphenation
 	const runs: TextRun[] = []
 	let text = "",
 		start = 0,
