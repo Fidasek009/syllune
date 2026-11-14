@@ -2,7 +2,13 @@ import type { browser } from "wxt/browser"
 
 import { readingChunks, sentenceTarget } from "../src/reading/chunks.ts"
 import { voices } from "../src/speech/catalog.ts"
-import { checkSpeedFocus, checkSpeedPanel, checkVolume, observePlayerAudio } from "./check-player-controls.ts"
+import {
+	checkLiveSpeed,
+	checkSpeedFocus,
+	checkSpeedPanel,
+	checkVolume,
+	observePlayerAudio,
+} from "./check-player-controls.ts"
 import { checkAbortedVoiceDeletion } from "./check-voice-deletion.ts"
 import { observeContextMenu } from "./observe-context-menu.ts"
 import { pageScript, readHighlightedText } from "./page-script.ts"
@@ -421,21 +427,8 @@ try {
 		"document.querySelector('#volume').value='100';document.querySelector('#volume').dispatchEvent(new Event('input'));document.querySelector('#volume').dispatchEvent(new Event('change'))",
 	)
 	console.log("Speed panel:", JSON.stringify(await player(checkSpeedFocus)))
-	const speedStartCount = await player("window.__probeAudio.starts.length")
-	await player(
-		"document.querySelector('#speed').value='1.1';document.querySelector('#speed').dispatchEvent(new Event('input'));document.querySelector('#speed').dispatchEvent(new Event('change'))",
-	)
-	const speedRestart = await waitFor<any>(
-		() =>
-			player(
-				`window.__probeAudio.starts.length>${speedStartCount}?({start:window.__probeAudio.starts[${speedStartCount}].requestedAt,stop:window.__probeAudio.lastStop}):null`,
-			),
-		Boolean,
-		90,
-	)
-	const speedRestartGapMs = speedRestart.start - speedRestart.stop
-	assert(speedRestartGapMs >= 0, "Speed adjustment did not stop the previous audio before restarting")
-	console.log("Speed-adjustment restart interval:", speedRestartGapMs.toFixed(1), "ms")
+	const liveSpeed = await player(checkLiveSpeed)
+	console.log("Live speed:", JSON.stringify(liveSpeed))
 	await player("document.querySelector('#play').click()")
 	for (const [name, width] of [
 		["playback-dark", 1000],
@@ -768,7 +761,7 @@ try {
 					cold,
 					warm,
 					mdCaptureMs,
-					speedRestartGapMs,
+					liveSpeed,
 					caveat:
 						"Development VM first-buffer readiness, not target-hardware audible latency; warm uses a different opening sentence in the same live engine.",
 				},

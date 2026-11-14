@@ -25,6 +25,7 @@ async function settle() {
 class FakeAudio implements PlaybackAudio {
 	paused = true
 	currentTime = 0
+	playbackRate = 1
 	volume = 1
 	disposed = false
 	plays = 0
@@ -48,7 +49,8 @@ class FakeAudio implements PlaybackAudio {
 	}
 }
 function fixture(options: { load?: () => Promise<void>; synthesize?: (text: string) => Promise<SpeechClip> } = {}) {
-	const inputs: string[] = [],
+	const speeds: number[] = [],
+		inputs: string[] = [],
 		audios: FakeAudio[] = [],
 		highlights: number[][] = [],
 		buffers: number[] = [],
@@ -58,7 +60,8 @@ function fixture(options: { load?: () => Promise<void>; synthesize?: (text: stri
 	const engine: PlaybackEngine = {
 		diagnostics: { backend: "cpu" },
 		load: options.load ?? (async () => {}),
-		synthesize: async (text) => {
+		synthesize: async (text, speed) => {
+			speeds.push(speed)
 			inputs.push(text)
 			return options.synthesize ? options.synthesize(text) : clip
 		},
@@ -85,6 +88,7 @@ function fixture(options: { load?: () => Promise<void>; synthesize?: (text: stri
 	return {
 		controller,
 		inputs,
+		speeds,
 		audios,
 		highlights,
 		buffers,
@@ -216,4 +220,43 @@ test("first audio follows native playing readiness and includes pre-load action 
 	expect(f.audioTimes).toEqual([650])
 	f.controller.updateHighlight()
 	expect(f.highlights.at(-1)).toEqual([0, 5])
+})
+
+test("speed changes preserve active audio, queued clips, pause and media-time highlighting", async () => {
+	const f = fixture()
+	await f.controller.setScope(scope, "voice", "en", 1.5)
+	await settle()
+	const active = f.audios[0]!
+	active.currentTime = 0.5
+	const revision = f.controller.revision
+	const inputs = [...f.inputs]
+	f.controller.setSpeed(2)
+	expect(f.controller.revision).toBe(revision)
+	expect(f.inputs).toEqual(inputs)
+	expect(f.speeds.every((speed) => speed === 1)).toBe(true)
+	expect(active.disposed).toBe(false)
+	expect(active.plays).toBe(1)
+	expect(active.currentTime).toBe(0.5)
+	expect(f.audios.map((audio) => audio.playbackRate)).toEqual([2, 2])
+	f.controller.updateHighlight()
+	expect(f.highlights.at(-1)).toEqual([0, 5])
+	f.controller.pause()
+	f.controller.setSpeed(0.5)
+	expect(active.paused).toBe(true)
+	active.end()
+	await settle()
+	expect(f.audios.every((audio) => audio.playbackRate === 0.5)).toBe(true)
+	expect(f.audios[1]!.paused).toBe(true)
+})
+
+test("speed changes during synthesis apply to the arriving clip without new generation", async () => {
+	const synthesis = deferred<SpeechClip>()
+	const f = fixture({ synthesize: () => synthesis.promise })
+	await f.controller.setScope("First sentence.", "voice", "en", 1)
+	f.controller.setSpeed(1.8)
+	synthesis.resolve(clip)
+	await settle()
+	expect(f.inputs).toHaveLength(1)
+	expect(f.audios[0]!.playbackRate).toBe(1.8)
+	expect(f.controller.playing).toBe(true)
 })

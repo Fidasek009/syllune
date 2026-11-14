@@ -221,3 +221,23 @@ export const checkVolume = pageScript(verifyVolume)
 export const checkSpeedPanel = pageScript(verifySpeedPanel)
 export const checkSpeedFocus = pageScript(verifySpeedPanel, true)
 export const failNextPlayback = pageScript(failPlayback)
+
+/** Change speed during real playback without replacing or pausing the current audio. */
+async function verifyLiveSpeed() {
+	const observation = (window as ProbeWindow).__probeAudio
+	const audio = observation.elements.find((element) => !element.paused)
+	if (!audio) throw new Error("Speed check requires active playback")
+	const starts = observation.starts.length
+	const stops = observation.stops
+	const time = audio.currentTime
+	const slider = document.querySelector<HTMLInputElement>("#speed")!
+	slider.value = "1.1"
+	slider.dispatchEvent(new Event("input"))
+	if (audio.playbackRate !== 1.1 || !audio.preservesPitch) throw new Error("Live speed must preserve pitch")
+	slider.dispatchEvent(new Event("change"))
+	await new Promise((resolve) => setTimeout(resolve, 150))
+	if (audio.paused || audio.currentTime <= time || observation.starts.length !== starts || observation.stops !== stops)
+		throw new Error("Speed change interrupted playback")
+	return { playbackRate: audio.playbackRate, preservesPitch: audio.preservesPitch }
+}
+export const checkLiveSpeed = pageScript(verifyLiveSpeed)
