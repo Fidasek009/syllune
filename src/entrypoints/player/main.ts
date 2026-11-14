@@ -213,10 +213,12 @@ function restart() {
 	const voice = getVoice(voiceSelect.value)
 	void controller.restart(voiceSelect.value, voice.locale, Number(speed.value))
 }
-speed.oninput = updateSpeed
+speed.oninput = () => {
+	updateSpeed()
+	controller.setSpeed(Number(speed.value))
+}
 speed.onchange = () => {
 	void browser.storage.local.set({ [localKeys.speed]: Number(speed.value) })
-	restart()
 }
 voiceSelect.onchange = () => {
 	void browser.storage.local.set({ [localKeys.voice]: voiceSelect.value })

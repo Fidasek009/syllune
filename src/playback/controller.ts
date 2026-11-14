@@ -110,6 +110,11 @@ export class PlaybackController {
 		this.volume = (level / 100) ** 2
 		for (const item of [this.active, this.scheduled]) if (item) item.audio.volume = this.volume
 	}
+	setSpeed(speed: number) {
+		if (this.closed || !Number.isFinite(speed) || speed < 0.5 || speed > 2) return
+		this.speed = speed
+		for (const item of [this.active, this.scheduled]) if (item) item.audio.playbackRate = speed
+	}
 	async setScope(text: string, voice: string, language: string, speed: number, startedAt = this.now()) {
 		this.text = text
 		this.voice = voice
@@ -246,7 +251,7 @@ export class PlaybackController {
 				const chunk = this.chunks[index]
 				if (!chunk) break
 				const offset = index === this.cursor && firstOffset !== undefined ? firstOffset : chunk.start
-				const clip = await this.engine.synthesize(this.text.slice(offset, chunk.end), this.speed)
+				const clip = await this.engine.synthesize(this.text.slice(offset, chunk.end), 1)
 				if (current !== this.epoch) return
 				this.consecutiveSkipped = clip.skippedText && !clip.words.length ? this.consecutiveSkipped + 1 : 0
 				if (this.consecutiveSkipped >= 3) throw speechFailure("text")
@@ -271,6 +276,7 @@ export class PlaybackController {
 	private output(item: QueuedClip, current: number): PlayingClip {
 		const audio = this.createAudio(item.clip)
 		audio.volume = this.volume
+		audio.playbackRate = this.speed
 		const playing = { ...item, audio }
 		audio.onerror = () => {
 			if (current === this.epoch) this.fail(new SpeechTextError("Audio could not play. Press Play to try again."))

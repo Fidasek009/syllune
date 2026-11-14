@@ -6,7 +6,7 @@ import type { StoredVoice } from "../src/speech/voice-store.ts"
 
 import { voices } from "../src/speech/catalog.ts"
 import { checkPdfSelection } from "./check-pdf-selection.ts"
-import { checkSpeedFocus, checkVolume, observePlayerAudio } from "./check-player-controls.ts"
+import { checkLiveSpeed, checkSpeedFocus, checkVolume, observePlayerAudio } from "./check-player-controls.ts"
 import { checkAbortedVoiceDeletion } from "./check-voice-deletion.ts"
 import { observeContextMenu } from "./observe-context-menu.ts"
 import { pageScript, readHighlightedText } from "./page-script.ts"
@@ -444,6 +444,7 @@ try {
 		"(()=>{document.querySelector('#volume').value='100';document.querySelector('#volume').dispatchEvent(new Event('input'));document.querySelector('#volume').dispatchEvent(new Event('change'))})()",
 	)
 	console.log("Firefox speed panel:", JSON.stringify(await script(checkSpeedFocus)))
+	console.log("Firefox live speed:", JSON.stringify(await script(checkLiveSpeed)))
 	const pressPlay = async () => {
 		await script("document.querySelector('#play').focus()")
 		await run("/actions", {

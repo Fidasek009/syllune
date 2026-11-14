@@ -6,6 +6,7 @@ import { speechWav } from "./wav.ts"
 export interface PlaybackAudio {
 	readonly paused: boolean
 	readonly currentTime: number
+	playbackRate: number
 	volume: number
 	onended: (() => void) | null
 	onerror: (() => void) | null
@@ -19,12 +20,19 @@ export function nativeSpeechAudio(clip: SpeechClip): PlaybackAudio {
 	const url = URL.createObjectURL(speechWav(clip.pcm, clip.sampleRate))
 	try {
 		const audio = new Audio(url)
+		audio.preservesPitch = true
 		const output: PlaybackAudio = {
 			get paused() {
 				return audio.paused
 			},
 			get currentTime() {
 				return audio.currentTime
+			},
+			get playbackRate() {
+				return audio.playbackRate
+			},
+			set playbackRate(value) {
+				audio.playbackRate = value
 			},
 			get volume() {
 				return audio.volume

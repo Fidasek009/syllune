@@ -134,3 +134,9 @@ The managed product scope is the full voice catalog: currently 178 models across
 ## Catalog availability confirmed 2026-11-06
 
 Manage all upstream candidates through one catalog workflow, but offer only models compatible with the current runtime. Exclude unsupported pronunciation engines and demonstrated model/runtime incompatibilities from download and reading choices. Diagnose and fix our own integration errors before excluding models. Retain unavailable metadata for maintenance and allow deletion of older downloads. The current inventory is 178 upstream candidates with 171 available models; seven need unsupported engines. Runtime compatibility does not establish license or acoustic-quality acceptance. See [the compatibility correction](piper-compatibility-2026-11-06.md).
+
+### Live playback speed (2026-11-14)
+
+Speed changes apply to generated audio while it plays. Generate reading clips at normal model speed, retain buffered clips, and update active and preloaded media elements as the slider moves. Keep pitch preservation enabled. Highlighting uses the media position in the original clip, so changing speed does not require retiming word boundaries. Voice changes still restart synthesis.
+
+This supersedes the preference for model duration control when changing reading speed. Browser pitch preservation is defined in the [HTML media specification](https://html.spec.whatwg.org/multipage/media.html#dom-media-preservespitch). Controller regression tests cover changes while playing, paused and generating; listening quality and underruns at faster speeds still need representative hardware measurements.

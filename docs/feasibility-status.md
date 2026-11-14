@@ -6,7 +6,7 @@ The extension is implemented; product acceptance is **not complete**. The eviden
 
 - WXT Manifest V3 packages, strict TypeScript, and Bun-only installs, builds, native checks, formatting, and tests.
 - Explicit voice download, hash verification, cancellation, deletion, and on-demand remote prerecorded previews. No voice model is included in the package or downloaded on startup.
-- Selection/article capture with DOM offsets, an in-page playback bar, sentence controls, voice choice, model-duration speed control, acoustic word timing, highlighting, and scrolling.
+- Selection/article capture with DOM offsets, an in-page playback bar, sentence controls, voice choice, pitch-preserving playback speed control, acoustic word timing, highlighting, and scrolling.
 - Browser-local Piper inference with Spellophone/eSpeak NG phonemes, separate GPU/CPU workers, and CPU retry after an acceleration failure. A reusable extension-owned host preserves a loaded model across reader lifetimes; Chrome uses an isolated offscreen document, Firefox its background page. The pinned catalog contains 178 models across 58 locale codes, including quality variants and multispeaker models. Seven require missing pronunciation engines and are visibly unavailable. Supported-format models still need broad inference/quality/license acceptance; catalog inclusion is not clearance.
 - A new-tab PDF reader using bundled PDF.js, keeping the original tab. Visible page canvases are bounded; text layers are created as needed, including when playback highlights a distant page. Selection matching preserves source offsets and refuses ambiguous/missing matches instead of reading the whole PDF.
 
