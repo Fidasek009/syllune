@@ -17,7 +17,12 @@ You need no account, subscription or companion app.
 
 ## Get started
 
-See [releases and downloads](https://github.com/Fidasek009/syllune/releases). Chrome supports unpacked installation; normal Firefox installation requires an AMO-signed package. For build and loading instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Install Syllune from your browser's store:
+
+- [Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/syllune/)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/syllune-offline-text-to-s/nelfckaimfchkkkdbndhohiaiobljkdk)
+
+For release archives, see [releases and downloads](https://github.com/Fidasek009/syllune/releases). For build and loading instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Choose and download a voice to start listening. Speech works offline once the voice and its required assets are installed and the text is available locally. Downloads, streamed samples and online documents need a connection. Voice quality and startup time vary by model and device.
 
