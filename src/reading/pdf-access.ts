@@ -20,7 +20,10 @@ function askAccess({
 	const explanation = document.createTextNode(message)
 	const allow = document.createElement("button")
 	allow.textContent = label
-	status.replaceChildren(explanation, " ", allow)
+	const actions = document.createElement("span")
+	actions.className = "status-actions"
+	actions.append(allow)
+	status.replaceChildren(explanation, actions)
 	return new Promise((resolve, reject) => {
 		const abort = () => {
 			cleanup()
@@ -40,7 +43,7 @@ function askAccess({
 			alternative = document.createElement("button")
 			alternative.textContent = fallback
 			alternative.onclick = () => finish(undefined)
-			status.append(" ", alternative)
+			actions.append(alternative)
 		}
 		signal.addEventListener("abort", abort, { once: true })
 		allow.onclick = () => {
@@ -64,10 +67,11 @@ function askAccess({
 
 async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Response> {
 	signal.throwIfAborted()
-	status.textContent =
+	const explanation = document.createElement("span")
+	explanation.textContent =
 		import.meta.env.BROWSER === "firefox"
 			? "Firefox cannot read local PDFs directly. Choose this PDF to read it here."
-			: "Chrome blocked direct access to this local PDF. Choose this PDF to open it here, or turn on “Allow access to file URLs” for Syllune in Chrome’s extension settings to open local PDFs directly."
+			: "Chrome needs a one-time setting to open local PDFs directly. Choose this PDF to read it now."
 	const input = document.createElement("input")
 	input.type = "file"
 	input.accept = "application/pdf,.pdf"
@@ -76,11 +80,28 @@ async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Res
 	const choose = document.createElement("button")
 	choose.textContent = "Choose PDF"
 	choose.onclick = () => input.click()
-	status.append(" ", choose, input)
+	const actions = document.createElement("span")
+	actions.className = "status-actions"
+	actions.append(choose)
+	status.replaceChildren(explanation, actions, input)
+	let settings: HTMLButtonElement | undefined
+	if (import.meta.env.BROWSER !== "firefox") {
+		settings = document.createElement("button")
+		settings.textContent = "Open settings"
+		settings.onclick = () => {
+			void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}` }).catch(() => undefined)
+			explanation.textContent = "Turn on “Allow access to file URLs”, then reopen this PDF to open local PDFs directly."
+		}
+		actions.append(settings)
+	}
+	const stop = () => {
+		input.onchange = null
+		choose.onclick = null
+		if (settings) settings.onclick = null
+	}
 	const file = await new Promise<File>((resolve, reject) => {
 		const abort = () => {
-			input.onchange = null
-			choose.onclick = null
+			stop()
 			reject(signal.reason)
 		}
 		signal.addEventListener("abort", abort, { once: true })
@@ -88,8 +109,7 @@ async function chooseFile(status: HTMLElement, signal: AbortSignal): Promise<Res
 			const selected = input.files?.[0]
 			if (!selected) return
 			signal.removeEventListener("abort", abort)
-			input.onchange = null
-			choose.onclick = null
+			stop()
 			resolve(selected)
 		}
 	})
