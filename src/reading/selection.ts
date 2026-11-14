@@ -4,11 +4,6 @@ import { projectRun } from "./runs.ts"
 
 const nodeIndexes = new WeakMap<ReadingDocument, WeakMap<Text, { first: number; last: number }>>()
 
-/** Invalidate after a lazily rendered PDF page rebinds its text nodes. */
-export function invalidateSelectionIndex(source: ReadingDocument) {
-	nodeIndexes.delete(source)
-}
-
 function selectionRuns(source: ReadingDocument, range: Range) {
 	if (typeof Text === "undefined" || !(range.startContainer instanceof Text) || !(range.endContainer instanceof Text))
 		return source.runs
@@ -28,7 +23,7 @@ function selectionRuns(source: ReadingDocument, range: Range) {
 	return first && last && first.first <= last.last ? source.runs.slice(first.first, last.last + 1) : source.runs
 }
 
-function sliceDocument(source: ReadingDocument, start: number, end: number): ReadingDocument {
+export function sliceDocument(source: ReadingDocument, start: number, end: number): ReadingDocument {
 	return {
 		text: source.text.slice(start, end),
 		runs: overlappingRuns(source, start, end).map((run) =>
@@ -63,7 +58,8 @@ export function selectRange(source: ReadingDocument, range: Range | null): Readi
 }
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
-function normalized(text: string) {
+/** Canonical selection text plus the printed offsets behind every canonical character. */
+export function canonicalText(text: string) {
 	let value = "",
 		offset = 0
 	const positions: number[] = []
@@ -100,8 +96,8 @@ function normalized(text: string) {
 export function locateSelection(source: ReadingDocument, selection: string): ReadingDocument {
 	// Matching normalized text must also return normalized speech, not a raw slice.
 	source = normalizeDocument(source, true)
-	const haystack = normalized(source.text)
-	const needle = normalized(selection).value.trim()
+	const haystack = canonicalText(source.text)
+	const needle = canonicalText(selection).value.trim()
 	if (!needle) throw new Error("Select some PDF text first.")
 	const match = haystack.value.indexOf(needle)
 	if (match < 0)
@@ -113,12 +109,15 @@ export function locateSelection(source: ReadingDocument, selection: string): Rea
 	return sliceDocument(source, start, end)
 }
 
-/** Keep the already-playing native text unchanged while mapping its word offsets to PDF text. */
-export function mapNativeSelection(source: ReadingDocument, selection: string) {
-	const document = locateSelection(source, selection)
-	const native = normalized(selection)
-	const printed = normalized(document.text)
+/**
+ * Map native-viewer selection offsets onto a located printed scope.
+ * Callers locate the selection first; this only translates native offsets to printed ones.
+ */
+export function nativeSelectionMapping(printedSource: ReadingDocument, selection: string) {
+	const native = canonicalText(selection)
+	const printed = canonicalText(printedSource.text)
 	const needle = native.value.trim()
+	if (!needle) throw new Error("Select some PDF text first.")
 	const match = printed.value.indexOf(needle)
 	if (match < 0) throw new Error("The selection could not be mapped to the printed text.")
 	const boundary = (offset: number) => {
@@ -132,7 +131,7 @@ export function mapNativeSelection(source: ReadingDocument, selection: string) {
 		return Math.min(low, needle.length)
 	}
 	return {
-		document,
+		document: printedSource,
 		range(start: number, end: number): { start: number; end: number } | null {
 			if (
 				!Number.isSafeInteger(start) ||
@@ -148,4 +147,9 @@ export function mapNativeSelection(source: ReadingDocument, selection: string) {
 			return { start: printed.positions[match + first]!, end: printed.ends[match + last]! }
 		},
 	}
+}
+
+/** Map a native-viewer selection onto the full document, rejecting ambiguity. */
+export function mapNativeSelection(source: ReadingDocument, selection: string) {
+	return nativeSelectionMapping(locateSelection(source, selection), selection)
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 
-import { overlappingRuns } from "../src/reading/document.ts"
-import { locateSelection, mapNativeSelection } from "../src/reading/selection.ts"
+import { concatDocuments, overlappingRuns } from "../src/reading/document.ts"
+import { locateSelection, mapNativeSelection, nativeSelectionMapping } from "../src/reading/selection.ts"
 
 test("native PDF selection normalizes layout whitespace while retaining exact source offsets", () => {
 	const node = {} as Text
@@ -51,4 +51,45 @@ test("native selection mapping preserves decomposed printed accents and line-wra
 	const word = mapping.range(start, start + 4)!
 	expect(mapping.document.text.slice(word.start, word.end)).toBe("cafe\u0301")
 	expect(() => mapNativeSelection({ text: "Same. Same.", runs: [] }, "Same.")).toThrow("more than once")
+})
+
+test("native selection maps onto an already-located scope", () => {
+	const scope = { text: "Header\nThe oﬃce   café\nFooter", runs: [] }
+	const mapping = nativeSelectionMapping(scope, "The office cafe\u0301")
+	expect(mapping.document).toBe(scope)
+	const office = mapping.range(4, 10)!
+	expect(scope.text.slice(office.start, office.end)).toBe("oﬃce")
+	const cafe = mapping.range(11, "The office cafe\u0301".length)!
+	expect(scope.text.slice(cafe.start, cafe.end)).toBe("café")
+	expect(mapping.range(0, 0)).toBeNull()
+})
+
+test("concatenated page documents shift offsets while keeping live text bindings", () => {
+	const first = { data: "One" } as Text
+	const second = { data: "Two" } as Text
+	const secondRun = { node: second, from: 0, to: 3, offset: 0 }
+	const document = concatDocuments([
+		{ text: "One ", runs: [{ node: first, from: 0, to: 3, offset: 0 }] },
+		{ text: "Two", runs: [secondRun] },
+	])
+	expect(document.text).toBe("One Two")
+	expect(document.runs.map((run) => [run.from, run.to])).toEqual([
+		[0, 3],
+		[4, 7],
+	])
+	const rebound = { data: "Two" } as Text
+	secondRun.node = rebound
+	expect(document.runs[1]!.node).toBe(rebound)
+})
+
+test("native mapping resolves hyphenation inside a located PDF scope", () => {
+	const scope = {
+		text: "Their day-to-day use is nev-\nertheless constrained by four limitations.",
+		runs: [],
+	}
+	const native = "Their day-to-day use is nevertheless constrained by four limitations."
+	const mapping = nativeSelectionMapping(scope, native)
+	const start = native.indexOf("nevertheless")
+	const word = mapping.range(start, start + "nevertheless".length)!
+	expect(scope.text.slice(word.start, word.end).replace(/[-\s]/gu, "")).toBe("nevertheless")
 })

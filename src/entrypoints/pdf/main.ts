@@ -1,17 +1,24 @@
-import type { PDFPageProxy, RenderTask } from "pdfjs-dist"
+import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist"
 
 import { getDocument, GlobalWorkerOptions, TextLayer } from "pdfjs-dist"
 import { browser } from "wxt/browser"
 
 import { isExtensionBackgroundSender } from "../../extension/sender.ts"
 import { createReaderDispatcher } from "../../reading/dispatch.ts"
-import { overlappingRuns, type ReadingDocument, sourceRange, type TextRun } from "../../reading/document.ts"
+import {
+	concatDocuments,
+	overlappingRuns,
+	type ReadingDocument,
+	sourceRange,
+	type TextRun,
+} from "../../reading/document.ts"
 import { currentWordHighlight, paintReaderHighlight } from "../../reading/layout.ts"
 import { sourceChangedMessage } from "../../reading/messages.ts"
 import { normalizeDocument } from "../../reading/normalize.ts"
 import { fetchPdf } from "../../reading/pdf-access.ts"
 import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
-import { invalidateSelectionIndex, mapNativeSelection, selectRange } from "../../reading/selection.ts"
+import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
+import { nativeSelectionMapping, selectRange, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
 import { parsePdfReaders, readingKeys } from "../../reading/state.ts"
 import "pdfjs-dist/web/pdf_viewer.css"
@@ -26,38 +33,217 @@ const zoomLevel = document.querySelector<HTMLSpanElement>("#zoom-level")!
 const params = new URLSearchParams(location.search)
 const highlightKey = currentWordHighlight
 const session = new ReaderSession<ReadingDocument>()
-let complete: ReadingDocument = { text: "", runs: [] }
-let nativeMapping: ReturnType<typeof mapNativeSelection> | undefined
-let currentHighlight: { start: number; end: number } | undefined
+let nativeMapping: ReturnType<typeof nativeSelectionMapping> | undefined
 let frame: HTMLIFrameElement | undefined
 let tabId: number | undefined
 let alive = true
 let allowStart = true
-let indexing = true
-const indexed = Promise.withResolvers<void>()
-void indexed.promise.catch(() => {})
-// Playback waits for a visible preview so a failed open never plays into the void.
-const previewReady = Promise.withResolvers<void>()
-void previewReady.promise.catch(() => {})
-const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
 let initialSelection: ReadingDocument | undefined
 let pendingSelection: ReadingDocument | undefined
 let pendingSelectionKey: string | undefined
+const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
+
+// The document promise lets an explicit command wait for startup without
+// guessing whether fetching has finished.
+const documentReady = Promise.withResolvers<PDFDocumentProxy>()
+void documentReady.promise.catch(() => {})
+// A native-viewer handoff is playable only after its printed region is located.
+const selectionLocated = Promise.withResolvers<void>()
+void selectionLocated.promise.catch(() => {})
+
+interface PdfTextRun extends TextRun {
+	node: Text
+}
+type PageTextContent = Awaited<ReturnType<PDFPageProxy["getTextContent"]>>
+interface PageState {
+	number: number
+	page: PDFPageProxy
+	canvas: HTMLCanvasElement
+	section: HTMLElement
+	container: HTMLDivElement
+	viewport: ReturnType<PDFPageProxy["getViewport"]>
+	fitScale: number
+	content?: PageTextContent
+	contentReady?: Promise<PageTextContent>
+	text: string
+	runs: (PdfTextRun | undefined)[]
+	document?: ReadingDocument
+	textReady?: Promise<void>
+	task?: RenderTask
+	visible: boolean
+	pending: Promise<void>
+}
+const owners = new WeakMap<Text, PageState>()
+const renderers = new Map<Element, PageState>()
+/** Pages are created in order; index 0 is page 1. */
+const pageStates: PageState[] = []
+let nextPage: Promise<PageState> | undefined
+let articlePromise: Promise<ReadingDocument> | undefined
+let articleBuilt = false
+
+function yieldToMain() {
+	const runtime = globalThis as {
+		scheduler?: { yield?: () => Promise<void> }
+	}
+	const yieldTask = runtime.scheduler?.yield
+	return yieldTask ? yieldTask.call(runtime.scheduler) : new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
+function pageDocument(state: PageState) {
+	return (state.document ??= {
+		text: state.text,
+		runs: state.runs.filter((run): run is PdfTextRun => run !== undefined),
+	})
+}
+
+async function pageThrough(number: number): Promise<PageState> {
+	const pdf = await documentReady.promise
+	if (!Number.isSafeInteger(number) || number < 1 || number > pdf.numPages)
+		throw new Error("This PDF page does not exist.")
+	while (pageStates.length < number) {
+		nextPage ??= createPage(pageStates.length + 1).finally(() => {
+			nextPage = undefined
+		})
+		await nextPage
+	}
+	const state = pageStates[number - 1]
+	if (!state) throw new Error("This PDF page could not be opened.")
+	return state
+}
+
+async function createPage(number: number): Promise<PageState> {
+	const pdf = await documentReady.promise
+	const page = await pdf.getPage(number)
+	if (!alive) throw new Error("This PDF reader has closed.")
+	const fitScale = Math.min(1.4, Math.max(280, innerWidth - 40) / page.getViewport({ scale: 1 }).width)
+	const viewport = page.getViewport({ scale: fitScale * zoom })
+	const section = document.createElement("section")
+	section.className = "pdf-page"
+	section.setAttribute("aria-label", `Page ${number}`)
+	setPageMetrics(section, viewport, fitScale * zoom)
+	const canvas = document.createElement("canvas")
+	canvas.width = canvas.height = 0
+	canvas.setAttribute("aria-hidden", "true")
+	const container = document.createElement("div")
+	container.className = "textLayer"
+	section.append(canvas, container)
+	pages.append(section)
+	if (number === 1) zoomControls.hidden = false
+	const state: PageState = {
+		number,
+		page,
+		canvas,
+		section,
+		container,
+		viewport,
+		fitScale,
+		text: "",
+		runs: [],
+		visible: false,
+		pending: Promise.resolve(),
+	}
+	pageStates.push(state)
+	renderers.set(section, state)
+	observer.observe(section)
+	return state
+}
+
+/** Extract page text once. Text layers and article indexing share this cache. */
+function ensureContent(state: PageState): Promise<PageTextContent> {
+	return (state.contentReady ??= (async () => {
+		const content = await state.page.getTextContent()
+		state.content = content
+		let text = ""
+		const runs: (PdfTextRun | undefined)[] = []
+		for (const item of content.items) {
+			if (!("str" in item)) continue
+			if (!item.str) {
+				if (item.hasEOL && !text.endsWith("\n")) text += "\n"
+				runs.push(undefined)
+				continue
+			}
+			const node = document.createTextNode(item.str)
+			const run = { from: text.length, to: text.length + item.str.length, node, offset: 0 }
+			owners.set(node, state)
+			runs.push(run)
+			text += item.str
+			if (item.hasEOL) text += "\n"
+		}
+		state.text = text.replace(/\n?$/u, "\n\n")
+		state.runs = runs
+		delete state.document
+		return content
+	})().catch((error) => {
+		delete state.contentReady
+		throw error
+	}))
+}
+
+function ensureText(state: PageState): Promise<void> {
+	return (state.textReady ??= (async () => {
+		const content = await ensureContent(state)
+		state.container.replaceChildren()
+		const layer = new TextLayer({
+			textContentSource: content,
+			container: state.container,
+			viewport: state.viewport,
+		})
+		await layer.render()
+		for (let index = 0; index < state.runs.length; index++) {
+			const run = state.runs[index]
+			if (!run) continue
+			const node = layer.textDivs[index]?.firstChild
+			if (!(node instanceof Text) || node.data !== run.node.data)
+				throw new Error("The PDF text layer could not be mapped accurately.")
+			run.node = node
+			owners.set(node, state)
+		}
+	})().catch((error) => {
+		delete state.textReady
+		throw error
+	}))
+}
+
+function pageDocuments(from: number, to: number): ReadingDocument {
+	const parts: ReadingDocument[] = []
+	for (let number = from; number <= to; number++) {
+		const state = pageStates[number - 1]
+		if (!state) throw new Error("Select some PDF text first.")
+		parts.push(pageDocument(state))
+	}
+	return concatDocuments(parts)
+}
+
+function pageAt(node: Node | null): PageState | undefined {
+	if (!node) return undefined
+	if (node instanceof Text) return owners.get(node)
+	const element = node instanceof Element ? node : node.parentElement
+	const section = element?.closest(".pdf-page")
+	return section ? renderers.get(section) : undefined
+}
+
+function selectedDocument(range: Range): ReadingDocument {
+	const first = pageAt(range.startContainer)
+	const last = pageAt(range.endContainer)
+	if (!first || !last) throw new Error("Select some PDF text first.")
+	const from = Math.min(first.number, last.number)
+	const to = Math.max(first.number, last.number)
+	return normalizeDocument(selectRange(pageDocuments(from, to), range), true)
+}
+
 function captureSelection() {
 	const selection = getSelection()
-	if (selection?.toString().trim() && selection.rangeCount) {
-		try {
-			pendingSelection = normalizeDocument(selectRange(complete, selection.getRangeAt(0)), true)
-		} catch {
-			pendingSelection = undefined
-		}
+	if (!selection?.toString().trim() || !selection.rangeCount) return
+	try {
+		pendingSelection = selectedDocument(selection.getRangeAt(0))
+	} catch {
+		pendingSelection = undefined
 	}
 }
 function takeSelection(): ReadingDocument | undefined {
 	const selection = getSelection()
-	const captured = selection?.toString().trim()
-		? normalizeDocument(selectRange(complete, selection.rangeCount ? selection.getRangeAt(0) : null), true)
-		: pendingSelection
+	const captured =
+		selection?.toString().trim() && selection.rangeCount ? selectedDocument(selection.getRangeAt(0)) : pendingSelection
 	pendingSelection = undefined
 	selection?.removeAllRanges()
 	return captured
@@ -70,25 +256,6 @@ pages.addEventListener("pointerdown", (event) => {
 document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape" || event.key.startsWith("Arrow")) pendingSelection = undefined
 })
-// Only the PDF layer owner rebinds nodes; normalized/sliced views are read-only.
-interface PdfTextRun extends TextRun {
-	node: Text
-}
-interface PageState {
-	page: PDFPageProxy
-	canvas: HTMLCanvasElement
-	section: HTMLElement
-	container: HTMLDivElement
-	content: Awaited<ReturnType<PDFPageProxy["getTextContent"]>>
-	viewport: ReturnType<PDFPageProxy["getViewport"]>
-	fitScale: number
-	runs: (PdfTextRun | undefined)[]
-	task?: RenderTask
-	visible: boolean
-	textReady?: Promise<void>
-	pending: Promise<void>
-}
-const owners = new WeakMap<Text, PageState>()
 
 function setPageMetrics(section: HTMLElement, viewport: PageState["viewport"], scale: number) {
 	section.style.width = `${viewport.width}px`
@@ -114,7 +281,7 @@ function canvasPixelRatio(viewport: PageState["viewport"]) {
 
 function scrollAnchor() {
 	const center = scrollY + innerHeight / 2
-	for (const item of renderers.values()) {
+	for (const item of pageStates) {
 		const rect = item.section.getBoundingClientRect()
 		if (rect.bottom < center) continue
 		return {
@@ -128,7 +295,7 @@ function scrollAnchor() {
 
 function applyZoom() {
 	const anchor = scrollAnchor()
-	for (const item of renderers.values()) {
+	for (const item of pageStates) {
 		const scale = item.fitScale * zoom
 		const viewport = item.page.getViewport({ scale })
 		item.viewport = viewport
@@ -144,7 +311,7 @@ function applyZoom() {
 	// Re-rasterize visible pages once the gesture settles; layout stays immediate.
 	clearTimeout(paintTimer)
 	paintTimer = setTimeout(() => {
-		for (const item of renderers.values()) {
+		for (const item of pageStates) {
 			item.task?.cancel()
 			if (item.visible) queuePaint(item)
 		}
@@ -158,64 +325,54 @@ function zoomTo(value: number) {
 	applyZoom()
 }
 
-function ensureText(state: PageState): Promise<void> {
-	return (state.textReady ??= (async () => {
-		state.container.replaceChildren()
-		const layer = new TextLayer({
-			textContentSource: state.content,
-			container: state.container,
-			viewport: state.viewport,
-		})
-		await layer.render()
-		for (let index = 0; index < state.runs.length; index++) {
-			const run = state.runs[index]
-			if (!run) continue
-			const node = layer.textDivs[index]?.firstChild
-			if (!(node instanceof Text) || node.data !== run.node.data)
-				throw new Error("The PDF text layer could not be mapped accurately.")
-			run.node = node
-			owners.set(node, state)
-		}
-		invalidateSelectionIndex(complete)
-	})().catch((error) => {
-		delete state.textReady
-		invalidateSelectionIndex(complete)
-		throw error
-	}))
-}
-
-function stop() {
+function clearMapping() {
 	nativeMapping = undefined
-	currentHighlight = undefined
 	pendingSelection = undefined
-	session.close()
-	frame?.remove()
-	frame = undefined
 	CSS.highlights?.delete(highlightKey)
 }
 
-async function start(mode: "article" | "selection", initial?: ReadingDocument) {
+function stop() {
+	clearMapping()
+	session.close()
+	frame?.remove()
+	frame = undefined
+}
+
+function describe(error: unknown) {
+	return error instanceof Error ? error.message : "This PDF could not be read."
+}
+
+async function start(mode: "article" | "selection", initial?: ReadingDocument): Promise<boolean> {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
 	const started = await session.start(async () => {
-		await (mode === "selection" ? previewReady.promise : indexed.promise)
-		const selected = initial ?? (mode === "selection" ? (initialSelection ?? takeSelection()) : undefined)
-		if (mode === "selection" && !selected) throw new Error("Select some PDF text first.")
-		const scope = selected ?? complete
-		if (!scope.text.trim()) throw new Error("This PDF has no readable text layer.")
-		return scope
+		if (mode === "article") {
+			const source = await articleDocument()
+			if (!source.text.trim()) throw new Error("This PDF has no readable text layer.")
+			return source
+		}
+		if (initial) {
+			await selectionLocated.promise
+			return initial
+		}
+		const selected = takeSelection()
+		if (!selected) throw new Error("Select some PDF text first.")
+		return selected
 	})
-	if (!started || !alive) return
-	clearMapping()
-	if (frame) {
+	if (!started || !alive) return false
+	if (mode === "article" || !initial) clearMapping()
+	status.textContent = ""
+	status.setAttribute("aria-live", "polite")
+	if (frame?.isConnected) {
 		frame.contentWindow?.postMessage(sourceChangedMessage(), location.origin)
-		return
+		return true
 	}
 	frame = document.createElement("iframe")
 	frame.title = "Syllune playback controls"
 	if (import.meta.env.BROWSER !== "firefox") frame.allow = "autoplay"
 	frame.src = `${browser.runtime.getURL("/player.html")}#${session.id}`
 	controls.append(frame)
+	return true
 }
 
 async function handleCommand(command: PdfCommand) {
@@ -229,16 +386,18 @@ async function handleCommand(command: PdfCommand) {
 		return
 	}
 	const reading = start(command.mode)
-	if (command.mode === "article" && indexing) {
+	if (command.mode === "article" && !articleBuilt) {
 		// Accept preparation without holding the background's routing lock until
 		// indexing finishes. A newer selection/stop can invalidate this request.
 		void reading.catch((error: unknown) => {
-			if (alive) status.textContent = error instanceof Error ? error.message : "This PDF could not be read."
+			if (alive) {
+				status.setAttribute("aria-live", "polite")
+				status.textContent = describe(error)
+			}
 		})
 		return
 	}
 	await reading
-	status.textContent = ""
 }
 
 // A synchronous guard leaves unrelated runtime messages for their own receiver.
@@ -255,19 +414,15 @@ browser.runtime.onMessage.addListener((message: unknown, sender) => {
 			await handleCommand(message)
 			return { ok: true }
 		} catch (error) {
-			const failure = error instanceof Error ? error.message : "This PDF could not be read. Select the text again."
-			if (alive) status.textContent = failure
+			const failure = describe(error)
+			if (alive) {
+				status.setAttribute("aria-live", "polite")
+				status.textContent = failure
+			}
 			return { ok: false, error: failure }
 		}
 	})()
 })
-
-function clearMapping() {
-	nativeMapping = undefined
-	currentHighlight = undefined
-	pendingSelection = undefined
-	CSS.highlights?.delete(highlightKey)
-}
 
 window.readAloudHost = createReaderDispatcher({
 	session,
@@ -280,7 +435,6 @@ window.readAloudHost = createReaderDispatcher({
 		if (size.width !== undefined) controls.style.maxWidth = `${size.width}px`
 	},
 	async highlight(start, end) {
-		currentHighlight = { start, end }
 		const printed = nativeMapping?.document ?? session.source
 		const bounds = nativeMapping ? nativeMapping.range(start, end) : { start, end }
 		if (!bounds || !printed) {
@@ -301,8 +455,6 @@ window.readAloudHost = createReaderDispatcher({
 		paintReaderHighlight(sourceRange(printed, bounds.start, bounds.end))
 	},
 })
-
-const renderers = new Map<Element, PageState>()
 
 function queuePaint(item: PageState) {
 	item.pending = item.pending
@@ -396,12 +548,112 @@ window.addEventListener(
 		clearTimeout(paintTimer)
 		stop()
 		observer.disconnect()
-		for (const renderer of renderers.values()) renderer.task?.cancel()
+		for (const renderer of pageStates) renderer.task?.cancel()
 		if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
 		void pdfTask?.destroy()
 	},
 	{ once: true },
 )
+
+/** Build the full reading text only when the whole PDF is the requested scope. */
+function articleDocument(): Promise<ReadingDocument> {
+	return (articlePromise ??= (async () => {
+		const pdf = await documentReady.promise
+		const parts: ReadingDocument[] = []
+		for (let number = 1; number <= pdf.numPages; number++) {
+			if (!alive) throw new Error("This PDF reader has closed.")
+			if (!frame) {
+				status.setAttribute("aria-live", "off")
+				status.textContent = `Preparing text · ${number} of ${pdf.numPages} pages`
+			}
+			const state = await pageThrough(number)
+			await ensureContent(state)
+			parts.push(pageDocument(state))
+			await yieldToMain()
+		}
+		if (!frame) {
+			status.setAttribute("aria-live", "off")
+			status.textContent = "Preparing text"
+		}
+		const reading = normalizeDocument(concatDocuments(parts), true)
+		articleBuilt = true
+		if (!frame) {
+			status.textContent = ""
+			status.setAttribute("aria-live", "polite")
+		}
+		return reading
+	})().catch((error) => {
+		articlePromise = undefined
+		throw error
+	}))
+}
+
+/** Fill page geometry in the background so the viewer scrolls like a normal document. */
+async function fillPageShells() {
+	const pdf = await documentReady.promise
+	while (alive && pageStates.length < pdf.numPages) {
+		await pageThrough(pageStates.length + 1)
+		await yieldToMain()
+	}
+}
+
+function scrollToSelected(scope: ReadingDocument, mapping: ReturnType<typeof nativeSelectionMapping>, length: number) {
+	const bounds = mapping.range(0, length)
+	const range = bounds ? sourceRange(scope, bounds.start, bounds.end) : null
+	const rect = range?.getClientRects()[0] ?? range?.getBoundingClientRect()
+	if (rect) scrollBy({ top: rect.top - innerHeight * 0.35, behavior: "instant" })
+}
+
+async function locateInitialSelection(selection: ReadingDocument, revision: number) {
+	const pdf = await documentReady.promise
+	const search = new PdfSelectionSearch(selection.text)
+	status.setAttribute("aria-live", "off")
+	try {
+		for (let number = 1; number <= pdf.numPages; number++) {
+			if (!alive || !session.isCurrent(revision)) {
+				selectionLocated.resolve()
+				return
+			}
+			status.textContent = `Finding your selection · ${number} of ${pdf.numPages}`
+			const state = await pageThrough(number)
+			await ensureContent(state)
+			if (number === 1) await ensureText(state).catch(() => {})
+			const match = search.push(state.text)
+			if (!match) {
+				await yieldToMain()
+				continue
+			}
+			const from = match.startPage + 1
+			const to = match.endPage + 1
+			for (let page = from; page <= to; page++) await ensureText(await pageThrough(page))
+			const parts: ReadingDocument[] = []
+			let end = match.end
+			for (let page = from; page <= to; page++) {
+				const part = pageDocument(await pageThrough(page))
+				if (page < to) end += part.text.length
+				parts.push(part)
+			}
+			const scope = sliceDocument(concatDocuments(parts), match.start, end)
+			const mapping = nativeSelectionMapping(scope, selection.text)
+			if (!session.isCurrent(revision) || !alive) {
+				selectionLocated.resolve()
+				return
+			}
+			nativeMapping = mapping
+			scrollToSelected(scope, mapping, selection.text.length)
+			status.textContent = ""
+			status.setAttribute("aria-live", "polite")
+			selectionLocated.resolve()
+			return
+		}
+		selectionLocated.reject(
+			new Error("This selection could not be located in the PDF. Select it in this reader and try again."),
+		)
+	} catch (error) {
+		selectionLocated.reject(error)
+		throw error
+	}
+}
 
 async function load() {
 	const raw = params.get("src")
@@ -416,6 +668,8 @@ async function load() {
 			status.textContent = "Reading stopped because the original PDF changed or closed."
 		}
 	}
+	let locationRevision = 0
+	let wouldLocate = false
 	if (params.get("mode") === "selection" && tabId !== undefined) {
 		const token = params.get("selection")
 		if (token !== null && !isPdfSelectionToken(token)) throw new Error("This PDF selection could not be opened.")
@@ -427,10 +681,17 @@ async function load() {
 		if (typeof stored[name] !== "string" || !stored[name].trim())
 			throw new Error("The PDF selection is no longer available. Select it in this reader and try again.")
 		initialSelection = normalizeDocument({ text: stored[name], runs: [] }, true)
-		if (allowStart && alive)
-			void start("selection", initialSelection).catch((error: unknown) => {
-				if (alive) status.textContent = error instanceof Error ? error.message : "This PDF could not be read."
+		if (allowStart && alive) {
+			const reading = start("selection", initialSelection)
+			locationRevision = session.revision
+			wouldLocate = true
+			void reading.catch((error: unknown) => {
+				if (alive) {
+					status.setAttribute("aria-live", "polite")
+					status.textContent = describe(error)
+				}
 			})
+		}
 	}
 	GlobalWorkerOptions.workerSrc = new URL("/pdf-runtime/pdf.worker.mjs", location.href).href
 	let bytes: Uint8Array<ArrayBuffer> | undefined
@@ -490,101 +751,40 @@ async function load() {
 			throw new Error("This document is not a readable PDF. Open a PDF and try again.")
 		throw error
 	})
-	const result: ReadingDocument = { text: "", runs: [] }
-	complete = result
-	const textRequests = new Map<number, Promise<{ page: PDFPageProxy; content: PageState["content"] }>>()
-	const pageText = (number: number) => {
-		let pending = textRequests.get(number)
-		if (!pending) {
-			pending = pdf.getPage(number).then(async (page) => ({ page, content: await page.getTextContent() }))
-			void pending.catch(() => {}) // A stopped reader may never consume prefetched work.
-			textRequests.set(number, pending)
-		}
-		return pending
-	}
-	if (pdf.numPages > 1) void pageText(2)
-	for (let n = 1; n <= pdf.numPages && alive; n++) {
-		// Keep progress visual without announcing every extracted page.
-		status.setAttribute("aria-live", "off")
-		status.textContent = `Opening PDF · ${n} of ${pdf.numPages} pages`
-		const { page, content } = await pageText(n)
-		textRequests.delete(n)
-		if (n + 1 <= pdf.numPages) void pageText(n + 1)
-		const fitScale = Math.min(1.4, Math.max(280, innerWidth - 40) / page.getViewport({ scale: 1 }).width)
-		const scale = fitScale * zoom
-		const viewport = page.getViewport({ scale })
-		const section = document.createElement("section")
-		section.className = "pdf-page"
-		section.setAttribute("aria-label", `Page ${n}`)
-		setPageMetrics(section, viewport, scale)
-		const canvas = document.createElement("canvas")
-		canvas.width = canvas.height = 0
-		canvas.setAttribute("aria-hidden", "true")
-		const container = document.createElement("div")
-		container.className = "textLayer"
-		section.append(canvas, container)
-		pages.append(section)
-		if (n === 1) zoomControls.hidden = false
-		const state: PageState = {
-			page,
-			canvas,
-			section,
-			container,
-			content,
-			viewport,
-			fitScale,
-			runs: [],
-			visible: false,
-			pending: Promise.resolve(),
-		}
-		for (const item of content.items) {
-			if (!("str" in item)) continue
-			if (!item.str) {
-				if (item.hasEOL && !result.text.endsWith("\n")) result.text += "\n"
-				state.runs.push(undefined)
-				continue
-			}
-			const node = document.createTextNode(item.str)
-			const run = { from: result.text.length, to: result.text.length + item.str.length, node, offset: 0 }
-			owners.set(node, state)
-			state.runs.push(run)
-			result.runs.push(run)
-			result.text += item.str
-			if (item.hasEOL) result.text += "\n"
-		}
-		result.text = result.text.replace(/\n?$/u, "\n\n")
-		invalidateSelectionIndex(complete)
-		renderers.set(section, state)
-		observer.observe(section)
-		if (n === 1) {
-			// Playback may begin once the opening page is real on screen; a text-layer
-			// failure still leaves the rendered page usable.
-			await ensureText(state).catch(() => {})
-			previewReady.resolve()
-		}
-	}
-	complete = normalizeDocument(result, true)
-	indexing = false
-	indexed.resolve()
+	documentReady.resolve(pdf)
+	// The opening page is the viewer, and for a native selection it is also the
+	// first candidate for locating the selected passage.
+	const first = await pageThrough(1)
+	await ensureText(first).catch(() => {})
 	status.textContent = ""
-	status.setAttribute("aria-live", "polite")
-	if (initialSelection && session.source === initialSelection && frame && alive) {
-		try {
-			nativeMapping = mapNativeSelection(complete, initialSelection.text)
-			if (currentHighlight)
-				await window.readAloudHost?.({ session: session.id, command: "highlight", ...currentHighlight })
-		} catch {
-			status.textContent = "Highlighting is unavailable for this selection."
-		}
+	if (wouldLocate && initialSelection) {
+		void locateInitialSelection(initialSelection, locationRevision)
+			.catch((error: unknown) => {
+				if (alive) {
+					status.setAttribute("aria-live", "polite")
+					status.textContent = describe(error)
+				}
+			})
+			.finally(() => {
+				if (alive && !articlePromise) void fillPageShells().catch(() => {})
+			})
+		return
 	}
-	if (!initialSelection && allowStart && alive) await start("article")
+	if (allowStart && alive) {
+		void start("article").catch((error: unknown) => {
+			if (alive) {
+				status.setAttribute("aria-live", "polite")
+				status.textContent = describe(error)
+			}
+		})
+	}
 }
 
 void load().catch((error) => {
-	indexed.reject(error)
-	previewReady.reject(error)
+	documentReady.reject(error)
+	selectionLocated.reject(error)
 	status.setAttribute("aria-live", "polite")
 	if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
 	if (!alive) return
-	status.textContent = error instanceof Error ? error.message : "This PDF could not be opened."
+	status.textContent = describe(error)
 })

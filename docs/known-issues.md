@@ -13,6 +13,16 @@ When direct reading is blocked, the reader offers a file choice and, in Chrome, 
 
 References: [Mozilla file-access issue 2085199](https://bugzilla.mozilla.org/show_bug.cgi?id=2085199), [Firefox PDF-viewer restrictions](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Content_scripts#limitations), [file-picker restrictions](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/file#notes), and [Chrome file-access settings](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions#allow-access).
 
+## A native-viewer selection can take longer to start deep in a long PDF
+
+Last reviewed: **2026-11-14**.
+
+The browser's PDF viewer gives Syllune the selected text, not the page number or its coordinates. Syllune scans page text with PDF.js until it finds the selection, then renders that page's text layer and maps the printed range before the player opens. This guarantees that audio starts on the selected page with a working highlight.
+
+The scan follows reading order, so cost grows with the page distance. On the Linux Chromium test machine with a warm voice, a selection on page 400 of a 462-page synthetic PDF opened the player after 2.6 seconds; a page-1 selection opened after 1.0 second. Whole-PDF preparation for the same document took 3.5 seconds. These numbers measure page location and player readiness, not first-audio latency or target hardware.
+
+If the selected text appears more than once, the native handoff reads the first match. Select the passage inside Syllune's reader when the exact occurrence matters; that selection maps directly and is exact.
+
 ## Firefox/Zen: first words of a new reading clip can be inaudible
 
 Last reviewed: **2026-11-14**.
