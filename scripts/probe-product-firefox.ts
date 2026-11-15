@@ -10,7 +10,15 @@ import { checkLiveSpeed, checkSpeedFocus, checkVolume, observePlayerAudio } from
 import { checkAbortedVoiceDeletion } from "./check-voice-deletion.ts"
 import { observeContextMenu } from "./observe-context-menu.ts"
 import { pageScript, readHighlightedText } from "./page-script.ts"
-import { inspectPdf, readCrossPageText, readEarlyPdfSelection, savePdfSelection } from "./pdf-page.ts"
+import {
+	inspectPdf,
+	pdfReaderReady,
+	type PdfReaderState,
+	readCrossPageText,
+	readEarlyPdfSelection,
+	readPdfReaderState,
+	savePdfSelection,
+} from "./pdf-page.ts"
 import { assert, copyProbeExtension, projectRoot, waitFor } from "./probe-helpers.ts"
 import {
 	recoverSelectionAfterFailure,
@@ -540,12 +548,8 @@ try {
 		Boolean,
 		20,
 	)
-	const pdfStatus = await waitFor(
-		() => script<string>("document.querySelector('#status').textContent"),
-		(value) => value === "" || !value.startsWith("Opening PDF"),
-		90,
-	)
-	assert(!pdfStatus, `Firefox PDF fetch failed: ${pdfStatus}`)
+	const pdfStatus = await waitFor(() => script<PdfReaderState>(readPdfReaderState), pdfReaderReady, 90)
+	assert(pdfStatus.player && !pdfStatus.status, `Firefox PDF fetch failed: ${pdfStatus.status}`)
 	const pdf = await script<{ pages: number; characters: number; highlighted: string }>(
 		pageScript(inspectPdf, "Virtual Research Environment"),
 	)

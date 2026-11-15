@@ -1,24 +1,8 @@
 import { expect, test } from "bun:test"
 
-import { overlappingRuns } from "../src/reading/document.ts"
-import { locateSelection, mapNativeSelection } from "../src/reading/selection.ts"
-
-test("native PDF selection normalizes layout whitespace while retaining exact source offsets", () => {
-	const node = {} as Text
-	const source = { text: "Header\nDobrý   den.\nFooter", runs: [{ from: 7, to: 19, node, offset: 0 }] }
-	const selected = locateSelection(source, "Dobrý den.")
-	expect(selected.text).toBe("Dobrý   den.")
-	expect(selected.runs).toEqual([{ from: 0, to: 12, node, offset: 0 }])
-})
-
-test("selection rejects ambiguous and missing matches instead of reading the whole document", () => {
-	expect(() => locateSelection({ text: "Repeated. Repeated.", runs: [] }, "Repeated.")).toThrow("more than once")
-	expect(() => locateSelection({ text: "Original", runs: [] }, "Missing")).toThrow("could not be located")
-})
-
-test("PDF ligatures and supplementary Unicode retain source character boundaries", () => {
-	expect(locateSelection({ text: "The oﬃce 😀.", runs: [] }, "office 😀").text).toBe("oﬃce 😀")
-})
+import { concatDocuments, overlappingRuns } from "../src/reading/document.ts"
+import { pdfHyphenation } from "../src/reading/normalize.ts"
+import { matchText } from "../src/reading/selection.ts"
 
 test("offset lookup skips unrelated pages while including split runs and layout gaps", () => {
 	const node = {} as Text
@@ -29,26 +13,58 @@ test("offset lookup skips unrelated pages while including split runs and layout 
 	expect(overlappingRuns(source, 3999, 4000)).toEqual([])
 })
 
-test("native speech offsets map through PDF whitespace, ligatures and composed accents", () => {
-	const printed = { text: "Header\nThe oﬃce   café\nFooter", runs: [] }
-	const native = "The office cafe\u0301"
-	const mapping = mapNativeSelection(printed, native)
-	expect(mapping.document.text).toBe("The oﬃce   café")
-	const office = mapping.range(4, 10)!
-	expect(mapping.document.text.slice(office.start, office.end)).toBe("oﬃce")
-	const cafe = mapping.range(11, native.length)!
-	expect(mapping.document.text.slice(cafe.start, cafe.end)).toBe("café")
-	expect(mapping.range(0, 0)).toBeNull()
-	expect(mapping.range(-1, 2)).toBeNull()
+test("concatenated page documents shift offsets while keeping live text bindings", () => {
+	const first = { data: "One" } as Text
+	const second = { data: "Two" } as Text
+	const secondRun = { node: second, from: 0, to: 3, offset: 0 }
+	const document = concatDocuments([
+		{ text: "One ", runs: [{ node: first, from: 0, to: 3, offset: 0 }] },
+		{ text: "Two", runs: [secondRun] },
+	])
+	expect(document.text).toBe("One Two")
+	expect(document.runs.map((run) => [run.from, run.to])).toEqual([
+		[0, 3],
+		[4, 7],
+	])
+	const rebound = { data: "Two" } as Text
+	secondRun.node = rebound
+	expect(document.runs[1]!.node).toBe(rebound)
 })
 
-test("native selection mapping preserves decomposed printed accents and line-wrap joins", () => {
-	const mapping = mapNativeSelection(
-		{ text: "Read in-\nfrastructure at the cafe\u0301.", runs: [] },
-		"Read infrastructure at the café.",
-	)
-	const start = "Read infrastructure at the ".length
-	const word = mapping.range(start, start + 4)!
-	expect(mapping.document.text.slice(word.start, word.end)).toBe("cafe\u0301")
-	expect(() => mapNativeSelection({ text: "Same. Same.", runs: [] }, "Same.")).toThrow("more than once")
+test("match key maps compatibility forms and accents back to printed characters", () => {
+	const raw = "The oﬃce   cafe\u0301\nFooter"
+	const key = matchText(raw)
+	expect(key.value).toBe("TheofficecaféFooter")
+	const ligature = key.value.indexOf("f")
+	expect(raw.slice(key.positions[ligature]!, key.ends[ligature]!)).toBe("ﬃ")
+	const accent = key.value.indexOf("é")
+	expect(raw.slice(key.positions[accent]!, key.ends[accent]!)).toBe("e\u0301")
+})
+
+test("match key ignores whitespace and line-end hyphens from both browser viewers", () => {
+	expect(matchText("Jupyter-\nHub").value).toBe("JupyterHub")
+	expect(matchText("JupyterHub").value).toBe("JupyterHub")
+	expect(matchText("tutorial1 . The wall").value).toBe("tutorial1.Thewall")
+	expect(matchText("day-to-day").value).toBe("daytoday")
+	const raw = "Jupyter-\nHub"
+	const key = matchText(raw)
+	const hub = key.value.indexOf("H")
+	expect(raw.slice(key.positions[hub]!, key.ends[hub]!)).toBe("H")
+})
+
+test("match key keeps raw offsets after astral characters", () => {
+	const raw = "One 😀 marker then the target."
+	const key = matchText(raw)
+	const target = key.value.indexOf("target")
+	expect(key.positions[target]).toBe(raw.indexOf("target"))
+	const last = key.value.length - 1
+	expect(key.positions[last]).toBe(raw.length - 1)
+	expect(key.ends[last]).toBe(raw.length)
+})
+
+test("PDF hyphenation removes markers without deleting the continuation", () => {
+	expect("nev-\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")
+	expect("nev-\n\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")
+	expect("Jupyter-\nHub".replace(pdfHyphenation, "")).toBe("JupyterHub")
+	expect("day-to-day".replace(pdfHyphenation, "")).toBe("day-to-day")
 })

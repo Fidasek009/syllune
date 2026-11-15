@@ -1,5 +1,6 @@
 import { maximumReadingCharacters } from "./limits.ts"
 import { normalizeDocument } from "./normalize.ts"
+import { projectRun } from "./runs.ts"
 
 export interface TextRun {
 	from: number
@@ -10,6 +11,20 @@ export interface TextRun {
 export interface ReadingDocument {
 	text: string
 	runs: TextRun[]
+}
+
+/** Join page documents in reading order while retaining each page's live DOM binding. */
+export function concatDocuments(parts: readonly ReadingDocument[]): ReadingDocument {
+	let text = ""
+	const runs: TextRun[] = []
+	for (const part of parts) {
+		const base = text.length
+		for (const run of part.runs) {
+			runs.push(projectRun(run, run.from + base, run.to + base, run.offset))
+		}
+		text += part.text
+	}
+	return { text, runs }
 }
 
 /** Runs are ordered by source offset, including when normalization splits a run. */

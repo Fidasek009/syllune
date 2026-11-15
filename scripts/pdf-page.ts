@@ -2,6 +2,27 @@ import type { browser } from "wxt/browser"
 
 import type {} from "../src/reading/bridge.ts"
 
+import { pageScript } from "./page-script.ts"
+
+export type PdfReaderState = { status: string; player: boolean }
+
+/** Self-contained readiness sample shared by both browser probes. */
+export function pdfReaderState(): PdfReaderState {
+	return {
+		status: document.querySelector("#status")?.textContent ?? "",
+		player: !!document.querySelector("iframe"),
+	}
+}
+
+export const readPdfReaderState = pageScript(pdfReaderState)
+
+export function pdfReaderReady({ status, player }: PdfReaderState) {
+	return (
+		(player && status === "") ||
+		(status.length > 0 && !/^(?:Opening PDF|Preparing text|Finding your selection)/u.test(status))
+	)
+}
+
 // Self-contained PDF reader checks, serialized into the extension page by pageScript.
 // Each function must define its own helpers: only the function body crosses the boundary.
 
