@@ -146,19 +146,50 @@ input[type="range"]::-moz-range-thumb {
 	border-radius: 50%;
 	background: var(--surface);
 }
-#voice {
+.voice-field {
+	position: relative;
+	display: flex;
 	flex: 1 1 136px;
-	width: 136px;
 	min-width: 76px;
 	max-width: 148px;
+}
+#voice {
+	flex: 1 1 auto;
+	width: 100%;
+	min-width: 0;
 	font: inherit;
 	height: 32px;
+	/* Chromium theming can ignore the author surface; own the box in every browser. */
+	appearance: none;
 	border: 1px solid var(--control-line);
 	border-radius: 7px;
-	padding: 0 6px;
+	padding-inline: 6px 22px;
 	color: inherit;
 	background: var(--surface);
+	color-scheme: light;
 	text-overflow: ellipsis;
+}
+.voice-field:has(#voice:disabled) {
+	opacity: 0.4;
+}
+.voice-chevron {
+	position: absolute;
+	inset-inline-end: 6px;
+	top: 50%;
+	translate: 0 -50%;
+	width: 14px;
+	height: 14px;
+	color: var(--control-line);
+	pointer-events: none;
+}
+@media (prefers-color-scheme: dark) {
+	#voice {
+		color-scheme: dark;
+	}
+	#voice option {
+		background: var(--surface);
+		color: var(--text);
+	}
 }
 .adjustment-panel {
 	position: fixed;
@@ -242,9 +273,6 @@ button.play:hover:not(:disabled) {
 	}
 	#voice-controls {
 		flex: 1 1 128px;
-	}
-	#voice {
-		max-width: 148px;
 	}
 }
 @media (max-width: 340px) {
