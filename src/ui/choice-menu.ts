@@ -68,21 +68,25 @@ export function choiceMenu<Value extends string>({
 		onChange(value)
 	}
 
-	function open() {
-		if (!choices.length) return
-		const index = choices.findIndex((choice) => choice.value === selected)
-		menu.showPopover()
-		activate(index < 0 ? 0 : index)
-		menu.focus()
-	}
-
 	function typeahead(key: string) {
 		const now = performance.now()
 		typing = now > typingUntil ? key : typing + key
 		typingUntil = now + 600
 		const query = typing.toLowerCase()
-		const index = choices.findIndex((choice) => choice.label.toLowerCase().startsWith(query))
-		if (index >= 0) activate(index)
+		const chars = [...query]
+		const first = chars[0] ?? query
+		// Repeating one letter steps through the matches, as a native select does.
+		const repeated = chars.length > 1 && chars.every((char) => char === first)
+		const needle = repeated ? first : query
+		const from = repeated ? active + 1 : 0
+		for (let offset = 0; offset < choices.length; offset++) {
+			const index = (from + offset) % choices.length
+			const choice = choices[index]
+			if (choice?.label.toLowerCase().startsWith(needle)) {
+				activate(index)
+				return
+			}
+		}
 	}
 
 	function choose(index: number) {
@@ -93,7 +97,9 @@ export function choiceMenu<Value extends string>({
 	button.setAttribute("aria-haspopup", "listbox")
 	button.setAttribute("aria-expanded", "false")
 	button.setAttribute("aria-controls", menu.id)
-	button.addEventListener("click", () => (menu.matches(":popover-open") ? close() : open()))
+	// The invoker relationship keeps light dismiss from swallowing the click that
+	// should close the menu, so a second press on the trigger toggles it.
+	button.popoverTargetElement = menu
 	menu.addEventListener("focusout", (event) => {
 		const next = event.relatedTarget
 		if (next instanceof Node && (menu.contains(next) || next === button)) return
@@ -102,7 +108,11 @@ export function choiceMenu<Value extends string>({
 	menu.addEventListener("toggle", (event) => {
 		const opened = (event as ToggleEvent).newState === "open"
 		button.setAttribute("aria-expanded", String(opened))
-		if (!opened && menu.contains(document.activeElement)) button.focus()
+		if (opened) {
+			const index = choices.findIndex((choice) => choice.value === selected)
+			activate(index < 0 ? 0 : index)
+			menu.focus()
+		} else if (menu.contains(document.activeElement)) button.focus()
 	})
 	menu.addEventListener("click", (event) => {
 		const option = (event.target as Element | null)?.closest<HTMLElement>("[role=option]")
