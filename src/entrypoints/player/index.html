@@ -31,7 +31,11 @@
 					</button>
 				</div>
 				<div id="voice-controls" role="group" aria-label="Voice controls">
-					<select id="voice" aria-label="Voice"></select>
+					<button id="voice" class="choice" type="button" data-label="Voice">
+						<span class="choice-label"></span>
+						<svg class="choice-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+					</button>
+					<div id="voice-menu" class="choice-menu" popover role="listbox" aria-label="Voice" tabindex="-1"></div>
 					<a
 						id="manage"
 						class="icon"

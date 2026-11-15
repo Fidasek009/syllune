@@ -1,4 +1,5 @@
 @import "../../theme.css";
+@import "../../choice-menu.css";
 
 :root {
 	font-family: system-ui, sans-serif;
@@ -123,7 +124,8 @@ button.danger:hover {
 	gap: 12px;
 	margin-top: 28px;
 }
-.filters label {
+.filters label,
+.filters .filter {
 	display: grid;
 	gap: 8px;
 	min-width: 0;
@@ -131,7 +133,7 @@ button.danger:hover {
 	font-weight: 600;
 }
 .filters input,
-.filters select {
+.filters .choice {
 	width: 100%;
 	min-width: 0;
 	min-height: 44px;
@@ -143,8 +145,31 @@ button.danger:hover {
 	color: inherit;
 	background: transparent;
 }
+#language {
+	anchor-name: --language-filter;
+}
+#quality {
+	anchor-name: --quality-filter;
+}
+.filters .choice-menu {
+	position: fixed;
+	top: anchor(bottom);
+	left: anchor(left);
+	min-width: anchor-size(width);
+	margin-top: 6px;
+}
+.filters .choice-menu.above {
+	top: auto;
+	bottom: anchor(top);
+	margin-block: 0 6px;
+}
+#language-menu {
+	position-anchor: --language-filter;
+}
+#quality-menu {
+	position-anchor: --quality-filter;
+}
 input:focus-visible,
-select:focus-visible,
 button:focus-visible,
 a:focus-visible {
 	outline: 3px solid var(--focus);
@@ -201,10 +226,6 @@ a {
 	}
 	button.danger:hover {
 		background: #462723;
-	}
-	select option {
-		background: var(--surface);
-		color: var(--text);
 	}
 	.download-status.error {
 		color: #ffb4aa;

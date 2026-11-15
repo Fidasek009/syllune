@@ -121,7 +121,7 @@ async function verifyVolume() {
 	const volume = document.querySelector<HTMLInputElement>("#volume")
 	const sound = document.querySelector<HTMLButtonElement>("#sound")
 	const panel = document.querySelector<HTMLElement>("#volume-panel")
-	const voice = document.querySelector<HTMLSelectElement>("#voice")
+	const voice = document.querySelector<HTMLButtonElement>("#voice")
 	if (!bar || !volume || !sound || !panel || !voice) throw new Error("Playback controls are missing")
 	const before = audio.stops
 	const barHeight = bar.getBoundingClientRect().height
@@ -208,11 +208,12 @@ async function verifySpeedPanel(verifyLiveAdjustment = false) {
 }
 
 function failPlayback() {
-	const voice = document.querySelector<HTMLSelectElement>("#voice")
-	if (!voice || voice.disabled || !voice.value) throw new Error("Playback voice control is unavailable")
+	const voice = document.querySelector<HTMLButtonElement>("#voice")
+	const selected = document.querySelector<HTMLElement>('#voice-menu [aria-selected="true"]')
+	if (!voice || voice.disabled || !selected) throw new Error("Playback voice control is unavailable")
 	document.body.setAttribute("data-probe-fail-buffer", "")
-	// Reprepare the current voice so the next output fails even when paused with buffered clips.
-	voice.dispatchEvent(new Event("change"))
+	// Reselect the current voice so the next output fails even when paused with buffered clips.
+	selected.click()
 }
 
 // Drivers still consume expressions, but every assertion above is checked by TypeScript.
