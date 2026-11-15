@@ -81,29 +81,15 @@ const qualityChoices: Choice[] = [
 		.sort((a, b) => qualityRank(a) - qualityRank(b))
 		.map((quality) => ({ value: quality, label: qualityLabel(quality) })),
 ]
-const languageButton = document.querySelector<HTMLButtonElement>("#language")!
-const languageMenuElement = document.querySelector<HTMLDivElement>("#language-menu")!
-const qualityButton = document.querySelector<HTMLButtonElement>("#quality")!
-const qualityMenuElement = document.querySelector<HTMLDivElement>("#quality-menu")!
-const languageMenu = choiceMenu({
-	button: languageButton,
-	menu: languageMenuElement,
-	onChange: () => void render(),
-})
-const qualityMenu = choiceMenu({
-	button: qualityButton,
-	menu: qualityMenuElement,
-	onChange: () => void render(),
-})
 /**
- * Radix sizes a select to the viewport space on the side it opens, with 10px of
- * collision padding, and flips to the other side when that space is larger.
+ * Mirrors Radix's select: 10px of collision padding against the viewport, and the
+ * menu opens on the side with more room.
  */
 const collisionMargin = 10
-for (const [button, menu] of [
-	[languageButton, languageMenuElement],
-	[qualityButton, qualityMenuElement],
-] as const)
+function filter(id: "language" | "quality", choices: Choice[]) {
+	const button = document.querySelector<HTMLButtonElement>(`#${id}`)!
+	const menu = document.querySelector<HTMLDivElement>(`#${id}-menu`)!
+	const control = choiceMenu({ button, menu, onChange: () => void render() })
 	menu.addEventListener("toggle", (event) => {
 		if ((event as ToggleEvent).newState !== "open") return
 		const rect = button.getBoundingClientRect()
@@ -113,8 +99,11 @@ for (const [button, menu] of [
 		menu.classList.toggle("above", openUp)
 		menu.style.setProperty("--choice-available-height", `${Math.max(0, openUp ? above : below)}px`)
 	})
-languageMenu.setChoices(languageChoices, "")
-qualityMenu.setChoices(qualityChoices, "")
+	control.setChoices(choices, "")
+	return control
+}
+const languageMenu = filter("language", languageChoices)
+const qualityMenu = filter("quality", qualityChoices)
 
 async function refreshInstalled() {
 	const current = ++renderRevision

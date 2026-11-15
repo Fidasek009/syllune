@@ -2,10 +2,6 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	padding: 0 6px 0 8px;
-	border: 1px solid var(--control-line);
-	border-radius: 7px;
-	background: var(--surface);
 	color: inherit;
 	font: inherit;
 	text-align: start;
@@ -38,7 +34,7 @@
 .choice-menu {
 	margin: 0;
 	padding: 4px;
-	/* shadcn caps a select at max-h-96; the voices page narrows it to the room under its trigger. */
+	/* 24rem cap, taken from shadcn's max-h-96; callers can narrow it. */
 	max-height: min(24rem, var(--choice-available-height, 24rem));
 	overflow-y: auto;
 	scrollbar-width: thin;

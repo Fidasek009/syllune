@@ -25,19 +25,17 @@ export function choiceMenu<Value extends string>({
 	menu,
 	onChange,
 }: ChoiceMenuConfig<Value>): ChoiceMenu<Value> {
-	const labelElement = button.querySelector<HTMLElement>(".choice-label")
-	if (!labelElement || !menu.id) throw new Error("Choice menu needs a .choice-label child and a menu id")
-	const label = labelElement
+	const label = button.querySelector<HTMLElement>(".choice-label")
+	if (!label || !menu.id) throw new Error("Choice menu needs a .choice-label child and a menu id")
 	const name = button.dataset.label
 	let choices: readonly Choice<Value>[] = []
+	let options: HTMLElement[] = []
 	let selected: Value | undefined
 	let active = 0
 	let typing = ""
 	let typingUntil = 0
 
-	const options = () => Array.from(menu.querySelectorAll<HTMLElement>("[role=option]"))
-
-	function paint(value: Value | undefined) {
+	const paint = (value: Value | undefined) => {
 		selected = value
 		const choice = choices.find((entry) => entry.value === value)
 		const text = choice?.label ?? ""
@@ -45,17 +43,17 @@ export function choiceMenu<Value extends string>({
 		button.dataset.value = value ?? ""
 		button.title = text
 		button.setAttribute("aria-label", name ? `${name}: ${text}` : text)
-		for (const [index, option] of options().entries())
+		for (const [index, option] of options.entries())
 			option.setAttribute("aria-selected", String(choices[index]?.value === value))
 	}
 
 	function activate(index: number) {
 		if (!choices.length) return
 		active = Math.max(0, Math.min(choices.length - 1, index))
-		const option = options()[active]
+		const option = options[active]
 		if (!option) return
 		menu.setAttribute("aria-activedescendant", option.id)
-		for (const [index, entry] of options().entries()) entry.classList.toggle("active", index === active)
+		for (const [index, entry] of options.entries()) entry.classList.toggle("active", index === active)
 		option.scrollIntoView({ block: "nearest" })
 	}
 
@@ -108,7 +106,7 @@ export function choiceMenu<Value extends string>({
 	})
 	menu.addEventListener("click", (event) => {
 		const option = (event.target as Element | null)?.closest<HTMLElement>("[role=option]")
-		if (option) choose(options().indexOf(option))
+		if (option) choose(options.indexOf(option))
 	})
 	menu.addEventListener("keydown", (event) => {
 		const actions: Record<string, () => void> = {
@@ -140,16 +138,16 @@ export function choiceMenu<Value extends string>({
 		},
 		setChoices(next, value = selected) {
 			choices = next
-			menu.replaceChildren(
-				...next.map((choice, index) => {
-					const option = document.createElement("div")
-					option.id = `${menu.id}-option-${index}`
-					option.setAttribute("role", "option")
-					option.className = "choice-option"
-					option.textContent = choice.label
-					return option
-				}),
-			)
+			options = next.map((choice, index) => {
+				const option = document.createElement("div")
+				option.id = `${menu.id}-option-${index}`
+				option.setAttribute("role", "option")
+				option.className = "choice-option"
+				option.textContent = choice.label
+				option.title = choice.label
+				return option
+			})
+			menu.replaceChildren(...options)
 			paint(next.some((choice) => choice.value === value) ? value : next[0]?.value)
 		},
 		close,

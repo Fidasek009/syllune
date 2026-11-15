@@ -133,7 +133,7 @@ function updateControls() {
 		speedPanel.hidePopover()
 		if (document.activeElement === speed || document.activeElement === rate) button("sound").focus()
 	}
-	if ((busy || !hasVoices) && voiceMenuElement.matches(":popover-open")) voiceMenu.close()
+	if (busy || !hasVoices) voiceMenu.close()
 	speed.disabled = rate.disabled = voiceButton.disabled = !hasVoices || busy
 	playback.hidden = !hasVoices
 	button("close").title = hasVoices ? "Stop reading" : "Close"

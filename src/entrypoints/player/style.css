@@ -152,6 +152,10 @@ input[type="range"]::-moz-range-thumb {
 	min-width: 76px;
 	max-width: 148px;
 	height: 32px;
+	padding-inline: 8px 6px;
+	border: 1px solid var(--control-line);
+	border-radius: 7px;
+	background: var(--surface);
 }
 #voice-menu {
 	position: fixed;
