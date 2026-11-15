@@ -178,6 +178,14 @@ function resizeBar() {
 	}).catch(() => {})
 }
 for (const [panel] of panels) panel.addEventListener("toggle", resizeBar)
+// Focus the slider when its panel opens, so the arrow keys reach it at once.
+for (const [panel, slider] of [
+	[speedPanel, speed],
+	[volumePanel, volume],
+] as const)
+	panel.addEventListener("toggle", (event) => {
+		if ((event as ToggleEvent).newState === "open") slider.focus()
+	})
 window.addEventListener("blur", () => {
 	for (const [panel] of panels) if (panel.matches(":popover-open")) panel.hidePopover()
 })
