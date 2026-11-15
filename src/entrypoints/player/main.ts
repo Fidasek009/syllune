@@ -7,6 +7,7 @@ import { playbackCopy } from "../../playback/copy.ts"
 import { bindMediaSession } from "../../playback/media-session.ts"
 import { parentReaderHost } from "../../reading/bridge.ts"
 import { isReaderResponse, type ReaderCommand, type ReaderResponse } from "../../reading/host.ts"
+import { readerMaxHeight } from "../../reading/layout.ts"
 import { isSourceChangedMessage, readerMessage } from "../../reading/messages.ts"
 import { compareVoices, getVoice, languageLabel, qualityLabel, voices } from "../../speech/catalog.ts"
 import { SpeechClient } from "../../speech/client.ts"
@@ -167,8 +168,12 @@ function resizeBar() {
 		if (!panel.matches(":popover-open")) continue
 		const anchor = panelAnchor.getBoundingClientRect()
 		const width = panel.getBoundingClientRect().width
+		const top = height + 8
 		panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, anchor.left + anchor.width / 2 - width / 2))}px`
-		panel.style.top = `${height + 8}px`
+		panel.style.top = `${top}px`
+		// The frame stops growing at readerMaxHeight, so the menu scrolls inside it.
+		if (panel === voiceMenuElement)
+			panel.style.setProperty("--choice-available-height", `${Math.max(0, readerMaxHeight - top - 8)}px`)
 		height = panel.getBoundingClientRect().bottom + 12
 	}
 	void send({

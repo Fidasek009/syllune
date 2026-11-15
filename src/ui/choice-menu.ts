@@ -153,6 +153,7 @@ export function choiceMenu<Value extends string>({
 				option.id = `${menu.id}-option-${index}`
 				option.setAttribute("role", "option")
 				option.className = "choice-option"
+				option.dataset.value = choice.value
 				option.textContent = choice.label
 				option.title = choice.label
 				return option

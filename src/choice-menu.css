@@ -73,3 +73,10 @@
 	background: var(--accent);
 	color: var(--accent-text);
 }
+/* Forced colors replace the background, so mark the keyboard position with a border. */
+@media (forced-colors: active) {
+	.choice-option.active {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
+}

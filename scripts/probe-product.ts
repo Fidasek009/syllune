@@ -194,7 +194,7 @@ try {
 	await Bun.write(`${root}/.cache/product-probe/voices-compact.png`, Uint8Array.fromBase64(catalogShot.data))
 	assert(
 		await view.evaluate(
-			"Array.from(document.querySelector('#language').options).find(option=>option.value==='cs-CZ').text==='Czech'",
+			"document.querySelector('#language-menu [role=option][data-value=\"cs-CZ\"]')?.textContent==='Czech'",
 		),
 		"Redundant Czech region label remains",
 	)
