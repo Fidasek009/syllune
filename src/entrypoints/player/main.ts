@@ -7,6 +7,7 @@ import { playbackCopy } from "../../playback/copy.ts"
 import { bindMediaSession } from "../../playback/media-session.ts"
 import { parentReaderHost } from "../../reading/bridge.ts"
 import { isReaderResponse, type ReaderCommand, type ReaderResponse } from "../../reading/host.ts"
+import { readerMaxHeight } from "../../reading/layout.ts"
 import { isSourceChangedMessage, readerMessage } from "../../reading/messages.ts"
 import { compareVoices, getVoice, languageLabel, qualityLabel, voices } from "../../speech/catalog.ts"
 import { SpeechClient } from "../../speech/client.ts"
@@ -14,6 +15,7 @@ import { firstAudioPerformance, firstBufferPerformance } from "../../speech/diag
 import { SpeechError, SpeechTextError } from "../../speech/errors.ts"
 import { sendSpeechHost } from "../../speech/host-protocol.ts"
 import { isVoiceChange } from "../../speech/protocol.ts"
+import { type Choice, choiceMenu } from "../../ui/choice-menu.ts"
 import "./style.css"
 
 const session = location.hash.slice(1)
@@ -40,7 +42,16 @@ const play = button("play"),
 	rate = button("rate")
 const speed = document.querySelector<HTMLInputElement>("#speed")!
 const speedLevel = document.querySelector<HTMLOutputElement>("#speed-level")!
-const voiceSelect = document.querySelector<HTMLSelectElement>("#voice")!
+const voiceButton = button("voice")
+const voiceMenuElement = document.querySelector<HTMLDivElement>("#voice-menu")!
+const voiceMenu = choiceMenu<string>({
+	button: voiceButton,
+	menu: voiceMenuElement,
+	onChange(value) {
+		void browser.storage.local.set({ [localKeys.voice]: value })
+		restart(value)
+	},
+})
 const status = document.querySelector<HTMLSpanElement>("#status")!
 const bar = document.querySelector<HTMLDivElement>("#bar")!
 const playback = document.querySelector<HTMLDivElement>("#playback")!
@@ -49,10 +60,16 @@ const setup = document.querySelector<HTMLAnchorElement>("#setup")!
 const volume = document.querySelector<HTMLInputElement>("#volume")!
 const volumePanel = document.querySelector<HTMLDivElement>("#volume-panel")!
 const speedPanel = document.querySelector<HTMLDivElement>("#speed-panel")!
-const panels = [speedPanel, volumePanel]
+// The reader frame is sized to the bar, so an open menu has to grow it like a panel.
+const panels = [
+	[speedPanel, rate],
+	[volumePanel, button("sound")],
+	[voiceMenuElement, voiceButton],
+] satisfies [HTMLElement, HTMLElement][]
 const volumeLevel = document.querySelector<HTMLOutputElement>("#volume-level")!
 let checkingVoices = true,
 	hasVoices = false,
+	voiceChoices: readonly Choice[] = [],
 	voiceRevision = 0,
 	highlightFrame = 0
 let firstBufferMs: number | undefined
@@ -117,7 +134,8 @@ function updateControls() {
 		speedPanel.hidePopover()
 		if (document.activeElement === speed || document.activeElement === rate) button("sound").focus()
 	}
-	speed.disabled = rate.disabled = voiceSelect.disabled = !hasVoices || busy
+	if (busy || !hasVoices) voiceMenu.close()
+	speed.disabled = rate.disabled = voiceButton.disabled = !hasVoices || busy
 	playback.hidden = !hasVoices
 	button("close").title = hasVoices ? "Stop reading" : "Close"
 	button("close").setAttribute("aria-label", button("close").title)
@@ -146,12 +164,16 @@ function updateControls() {
 function resizeBar() {
 	if (controller.closed) return
 	let height = bar.getBoundingClientRect().bottom
-	for (const panel of panels) {
+	for (const [panel, panelAnchor] of panels) {
 		if (!panel.matches(":popover-open")) continue
-		const anchor = (panel === volumePanel ? button("sound") : rate).getBoundingClientRect()
+		const anchor = panelAnchor.getBoundingClientRect()
 		const width = panel.getBoundingClientRect().width
+		const top = height + 8
 		panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, anchor.left + anchor.width / 2 - width / 2))}px`
-		panel.style.top = `${height + 8}px`
+		panel.style.top = `${top}px`
+		// The frame stops growing at readerMaxHeight, so the menu scrolls inside it.
+		if (panel === voiceMenuElement)
+			panel.style.setProperty("--choice-available-height", `${Math.max(0, readerMaxHeight - top - 8)}px`)
 		height = panel.getBoundingClientRect().bottom + 12
 	}
 	void send({
@@ -160,9 +182,17 @@ function resizeBar() {
 		width: hasVoices ? 460 : checkingVoices ? 320 : 400,
 	}).catch(() => {})
 }
-for (const panel of panels) panel.addEventListener("toggle", resizeBar)
+for (const [panel] of panels) panel.addEventListener("toggle", resizeBar)
+// Focus the slider when its panel opens, so the arrow keys reach it at once.
+for (const [panel, slider] of [
+	[speedPanel, speed],
+	[volumePanel, volume],
+] as const)
+	panel.addEventListener("toggle", (event) => {
+		if ((event as ToggleEvent).newState === "open") slider.focus()
+	})
 window.addEventListener("blur", () => {
-	for (const panel of panels) if (panel.matches(":popover-open")) panel.hidePopover()
+	for (const [panel] of panels) if (panel.matches(":popover-open")) panel.hidePopover()
 })
 function highlight() {
 	highlightFrame = 0
@@ -198,6 +228,7 @@ play.onclick = () => {
 previous.onclick = () => void controller.step(-1)
 next.onclick = () => void controller.step(1)
 button("close").onclick = () => {
+	voiceMenu.close()
 	controller.close()
 	mediaControls.dispose()
 	void send({ command: "close" }).catch(() => {})
@@ -209,9 +240,8 @@ function updateSpeed() {
 	speedLevel.value = rate.textContent
 	speed.setAttribute("aria-valuetext", `${Number(speed.value)}× normal speed`)
 }
-function restart() {
-	const voice = getVoice(voiceSelect.value)
-	void controller.restart(voiceSelect.value, voice.locale, Number(speed.value))
+function restart(voiceId: string) {
+	void controller.restart(voiceId, getVoice(voiceId).locale, Number(speed.value))
 }
 speed.oninput = () => {
 	updateSpeed()
@@ -219,10 +249,6 @@ speed.oninput = () => {
 }
 speed.onchange = () => {
 	void browser.storage.local.set({ [localKeys.speed]: Number(speed.value) })
-}
-voiceSelect.onchange = () => {
-	void browser.storage.local.set({ [localKeys.voice]: voiceSelect.value })
-	restart()
 }
 
 async function refreshVoices(
@@ -235,23 +261,25 @@ async function refreshVoices(
 	const installed = new Set<string>(response)
 	const preferences = await preferencesPromise
 	if (controller.closed || current !== voiceRevision) return hasVoices
-	const previousChoice = voiceSelect.value
-	voiceSelect.replaceChildren()
-	for (const voice of voices.filter((voice) => installed.has(voice.id)).sort(compareVoices)) {
-		const option = document.createElement("option")
-		option.value = voice.id
-		option.textContent = `${voice.name} · ${qualityLabel(voice.quality)} · ${languageLabel(voice)}`
-		voiceSelect.append(option)
-	}
+	const previousChoice = voiceMenu.value
+	voiceChoices = voices
+		.filter((voice) => installed.has(voice.id))
+		.sort(compareVoices)
+		.map((voice) => ({
+			value: voice.id,
+			label: `${voice.name} · ${qualityLabel(voice.quality)} · ${languageLabel(voice)}`,
+		}))
+	let choice: string | undefined
 	for (const preferred of [preferences.voice, previousChoice]) {
 		// Earlier releases stored a speaker suffix after the voice ID.
 		const id = typeof preferred === "string" ? preferred.split("#")[0] : undefined
-		if (id && Array.from(voiceSelect.options).some((option) => option.value === id)) {
-			voiceSelect.value = id
+		if (id && voiceChoices.some((entry) => entry.value === id)) {
+			choice = id
 			break
 		}
 	}
-	hasVoices = voiceSelect.options.length > 0
+	voiceMenu.setChoices(voiceChoices, choice)
+	hasVoices = voiceChoices.length > 0
 	checkingVoices = false
 	updateControls()
 	return hasVoices
@@ -260,12 +288,12 @@ async function refreshVoices(
 async function voicesChanged(id: string, deleted: boolean) {
 	if (controller.closed) return
 	const wasWaiting = !hasVoices
-	const previousChoice = voiceSelect.value
+	const previousChoice = voiceMenu.value
 	const pending = refreshVoices()
 	const revision = voiceRevision
 	const available = await pending
 	if (controller.closed || revision !== voiceRevision) return
-	const stillInstalled = Array.from(voiceSelect.options).some((option) => option.value === id)
+	const stillInstalled = voiceChoices.some((choice) => choice.value === id)
 	if (!available) controller.unavailable()
 	else if (deleted && id === previousChoice && !stillInstalled)
 		controller.fail(new SpeechError("voice", "Voice removed. Press Play to use another downloaded voice."))
@@ -283,7 +311,7 @@ window.addEventListener("pagehide", () => {
 })
 new ResizeObserver(resizeBar).observe(bar)
 window.addEventListener("keydown", (event) => {
-	if (event.key === "Escape" && !panels.some((panel) => panel.matches(":popover-open"))) button("close").click()
+	if (event.key === "Escape" && !panels.some(([panel]) => panel.matches(":popover-open"))) button("close").click()
 })
 async function initialize() {
 	if (controller.closed) return
@@ -316,13 +344,9 @@ async function initialize() {
 			updateControls()
 			return
 		}
-		await controller.setScope(
-			source.text,
-			voiceSelect.value,
-			getVoice(voiceSelect.value).locale,
-			Number(speed.value),
-			began,
-		)
+		const voice = voiceMenu.value
+		if (!voice) throw new SpeechError("voice", "Your voices could not be loaded. Open Voices and try again.")
+		await controller.setScope(source.text, voice, getVoice(voice).locale, Number(speed.value), began)
 	} catch (error) {
 		if (!controller.closed && generation === controller.revision) controller.fail(error)
 	}

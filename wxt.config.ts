@@ -99,7 +99,8 @@ export default defineConfig({
 							id: process.env.FIREFOX_EXTENSION_ID || "read-aloud@fidasek009.github.io",
 							// AMO checks the data-consent key against Android 142 as well.
 							// Do not add gecko_android: only desktop is supported/tested.
-							strict_min_version: "142.0",
+							// Filters use CSS anchor positioning, enabled by default in 147.
+							strict_min_version: "147.0",
 							data_collection_permissions: { required: ["none"] },
 						},
 					},

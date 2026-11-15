@@ -1,0 +1,82 @@
+.choice {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: inherit;
+	font: inherit;
+	text-align: start;
+	cursor: pointer;
+}
+.choice:hover:not(:disabled) {
+	border-color: var(--line);
+}
+.choice:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.choice:focus-visible {
+	outline: 3px solid var(--focus);
+	outline-offset: 2px;
+}
+.choice-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.choice-chevron {
+	flex: none;
+	width: 14px;
+	height: 14px;
+	color: var(--control-line);
+}
+.choice-menu {
+	margin: 0;
+	padding: 4px;
+	/* 24rem cap, taken from shadcn's max-h-96; callers can narrow it. */
+	max-height: min(24rem, var(--choice-available-height, 24rem));
+	overflow-y: auto;
+	scrollbar-width: thin;
+	scrollbar-color: var(--line) transparent;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: var(--surface);
+	color: var(--text);
+	font: inherit;
+	/* The voices filters wrap this menu in bold text. */
+	font-weight: 400;
+	box-shadow: 0 6px 16px #0003;
+	overscroll-behavior: contain;
+}
+/* The active option shows the keyboard position, as in the ARIA listbox pattern. */
+.choice-menu:focus-visible {
+	outline: none;
+}
+.choice-option {
+	padding: 6px 8px;
+	border-radius: 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.choice-option:hover,
+.choice-option[aria-selected="true"] {
+	background: var(--hover);
+}
+.choice-option[aria-selected="true"] {
+	font-weight: 600;
+}
+/* Keyboard position uses the accent so it clears non-text contrast. */
+.choice-option.active {
+	background: var(--accent);
+	color: var(--accent-text);
+}
+/* Forced colors replace the background, so mark the keyboard position with a border. */
+@media (forced-colors: active) {
+	.choice-option.active {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
+}

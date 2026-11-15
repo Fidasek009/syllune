@@ -3,13 +3,12 @@ import { browser } from "wxt/browser"
 import { localKeys } from "../../extension/storage.ts"
 import { catalogVoices, compareVoices, languageLabel, qualityLabel, qualityRank, voices } from "../../speech/catalog.ts"
 import { deleteVoice, downloadVoice, installedVoices, onVoicesChanged } from "../../speech/vault.ts"
+import { type Choice, choiceMenu } from "../../ui/choice-menu.ts"
 import "./style.css"
 
 const list = document.querySelector<HTMLDivElement>("#voices")!
 const status = document.querySelector<HTMLParagraphElement>("#status")!
 const search = document.querySelector<HTMLInputElement>("#search")!
-const language = document.querySelector<HTMLSelectElement>("#language")!
-const qualityFilter = document.querySelector<HTMLSelectElement>("#quality")!
 const count = document.querySelector<HTMLParagraphElement>("#count")!
 const audio = new Audio()
 audio.preload = "none"
@@ -70,15 +69,41 @@ function stopPreview() {
 	preview = undefined
 }
 const sorted = [...catalogVoices].sort(compareVoices)
-for (const [locale, name] of [...new Map(voices.map((voice) => [voice.locale, languageLabel(voice)]))].sort((a, b) =>
-	a[1].localeCompare(b[1]),
-)) {
-	language.add(new Option(name, locale))
+const languageChoices: Choice[] = [
+	{ value: "", label: "All languages" },
+	...[...new Map(voices.map((voice) => [voice.locale, languageLabel(voice)]))]
+		.sort((a, b) => a[1].localeCompare(b[1]))
+		.map(([locale, label]) => ({ value: locale, label })),
+]
+const qualityChoices: Choice[] = [
+	{ value: "", label: "All qualities" },
+	...[...new Set(voices.map((voice) => voice.quality))]
+		.sort((a, b) => qualityRank(a) - qualityRank(b))
+		.map((quality) => ({ value: quality, label: qualityLabel(quality) })),
+]
+/**
+ * Mirrors Radix's select: 10px of collision padding against the viewport, and the
+ * menu opens on the side with more room.
+ */
+const collisionMargin = 10
+function filter(id: "language" | "quality", choices: Choice[]) {
+	const button = document.querySelector<HTMLButtonElement>(`#${id}`)!
+	const menu = document.querySelector<HTMLDivElement>(`#${id}-menu`)!
+	const control = choiceMenu({ button, menu, onChange: () => void render() })
+	menu.addEventListener("toggle", (event) => {
+		if ((event as ToggleEvent).newState !== "open") return
+		const rect = button.getBoundingClientRect()
+		const below = innerHeight - rect.bottom - collisionMargin * 2
+		const above = rect.top - collisionMargin * 2
+		const openUp = above > below
+		menu.classList.toggle("above", openUp)
+		menu.style.setProperty("--choice-available-height", `${Math.max(0, openUp ? above : below)}px`)
+	})
+	control.setChoices(choices, "")
+	return control
 }
-for (const quality of [...new Set(voices.map((voice) => voice.quality))].sort(
-	(a, b) => qualityRank(a) - qualityRank(b),
-))
-	qualityFilter.add(new Option(qualityLabel(quality), quality))
+const languageMenu = filter("language", languageChoices)
+const qualityMenu = filter("quality", qualityChoices)
 
 async function refreshInstalled() {
 	const current = ++renderRevision
@@ -123,8 +148,8 @@ function render() {
 	const shown = sorted.filter(
 		(voice) =>
 			(!voice.unsupported || installed.has(voice.id)) &&
-			(!language.value || voice.locale === language.value) &&
-			(!qualityFilter.value || voice.quality === qualityFilter.value) &&
+			(!languageMenu.value || voice.locale === languageMenu.value) &&
+			(!qualityMenu.value || voice.quality === qualityMenu.value) &&
 			`${voice.name} ${voice.id} ${voice.language} ${voice.nativeLanguage} ${voice.quality}`
 				.toLocaleLowerCase()
 				.includes(query),
@@ -278,11 +303,6 @@ function render() {
 	}
 }
 search.oninput = render
-language.onchange = () => {
-	language.title = language.selectedOptions[0]?.textContent ?? "All languages"
-	void render()
-}
-qualityFilter.onchange = () => void render()
 audio.onended = stopPreview
 audio.onerror = () => {
 	if (preview && audio.error) {

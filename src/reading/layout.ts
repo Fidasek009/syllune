@@ -1,8 +1,11 @@
 export const currentWordHighlight = "read-aloud-current-word"
 
+/** The overlay stops growing here, so the player fits popovers inside it. */
+export const readerMaxHeight = 240
+
 export function readerSize(height: number, width?: number) {
 	return {
-		height: Math.min(240, Math.max(44, height)),
+		height: Math.min(readerMaxHeight, Math.max(44, height)),
 		...(width === undefined ? {} : { width: Math.min(640, Math.max(240, width)) }),
 	}
 }

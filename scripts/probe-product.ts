@@ -194,7 +194,7 @@ try {
 	await Bun.write(`${root}/.cache/product-probe/voices-compact.png`, Uint8Array.fromBase64(catalogShot.data))
 	assert(
 		await view.evaluate(
-			"Array.from(document.querySelector('#language').options).find(option=>option.value==='cs-CZ').text==='Czech'",
+			"document.querySelector('#language-menu [role=option][data-value=\"cs-CZ\"]')?.textContent==='Czech'",
 		),
 		"Redundant Czech region label remains",
 	)
@@ -310,7 +310,7 @@ try {
 		(value) => value === "playback",
 	)
 	assert(
-		await player("document.querySelector('#voice').value==='en_US-ljspeech-medium'"),
+		await player("document.querySelector('#voice').dataset.value==='en_US-ljspeech-medium'"),
 		"Stale preference left the voice picker empty",
 	)
 	const directReader = await player(pageScript(chromeReaderContract))
@@ -364,7 +364,7 @@ try {
 	await view.evaluate(checkAbortedVoiceDeletion("en_US-ljspeech-medium"))
 	assert(
 		await player(
-			"document.querySelector('#voice').value==='en_US-ljspeech-medium' && document.querySelector('#status').textContent==='Reading'",
+			"document.querySelector('#voice').dataset.value==='en_US-ljspeech-medium' && document.querySelector('#status').textContent==='Reading'",
 		),
 		"An aborted deletion interrupted the installed voice",
 	)
@@ -376,7 +376,7 @@ try {
 	await new Promise((resolve) => setTimeout(resolve, 500))
 	assert(
 		await player(
-			"document.querySelector('#voice').value==='en_US-ljspeech-medium' && document.querySelector('#status').textContent==='Reading'",
+			"document.querySelector('#voice').dataset.value==='en_US-ljspeech-medium' && document.querySelector('#status').textContent==='Reading'",
 		),
 		"A stale deletion notification interrupted an installed voice",
 	)

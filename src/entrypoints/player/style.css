@@ -1,4 +1,5 @@
 @import "../../theme.css";
+@import "../../choice-menu.css";
 
 :root {
 	font:
@@ -80,7 +81,6 @@ button.play:disabled {
 }
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
 a:focus-visible {
 	outline: 3px solid var(--focus);
 	outline-offset: 2px;
@@ -151,14 +151,17 @@ input[type="range"]::-moz-range-thumb {
 	width: 136px;
 	min-width: 76px;
 	max-width: 148px;
-	font: inherit;
 	height: 32px;
+	padding-inline: 8px 6px;
 	border: 1px solid var(--control-line);
 	border-radius: 7px;
-	padding: 0 6px;
-	color: inherit;
 	background: var(--surface);
-	text-overflow: ellipsis;
+}
+#voice-menu {
+	position: fixed;
+	inset: 60px auto auto 8px;
+	width: max-content;
+	max-width: min(340px, calc(100vw - 16px));
 }
 .adjustment-panel {
 	position: fixed;

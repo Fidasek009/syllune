@@ -283,7 +283,7 @@ try {
 		(value) => value === "playback",
 	)
 	assert(
-		await script("document.querySelector('#voice').value==='cs_CZ-jirka-medium'"),
+		await script("document.querySelector('#voice').dataset.value==='cs_CZ-jirka-medium'"),
 		"Firefox stale preference left an empty voice picker",
 	)
 	const directReader = await script<{ document?: { text?: string }; stale?: { error?: string } }>(
@@ -353,7 +353,7 @@ try {
 	await run("/frame", { id: frame })
 	assert(
 		await script(
-			"document.querySelector('#voice').value==='cs_CZ-jirka-medium' && document.querySelector('#status').textContent==='Reading'",
+			"document.querySelector('#voice').dataset.value==='cs_CZ-jirka-medium' && document.querySelector('#status').textContent==='Reading'",
 		),
 		"An aborted deletion interrupted the Firefox voice",
 	)
@@ -364,7 +364,7 @@ try {
 	await Bun.sleep(500)
 	assert(
 		await script(
-			"document.querySelector('#voice').value==='cs_CZ-jirka-medium' && document.querySelector('#status').textContent==='Reading'",
+			"document.querySelector('#voice').dataset.value==='cs_CZ-jirka-medium' && document.querySelector('#status').textContent==='Reading'",
 		),
 		"A stale deletion notification interrupted the installed Firefox voice",
 	)

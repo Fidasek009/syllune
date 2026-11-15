@@ -16,18 +16,22 @@
 					>Search
 					<input id="search" type="search" placeholder="Voice name or language" autocomplete="off" />
 				</label>
-				<label for="language"
-					>Language
-					<select id="language">
-						<option value="">All languages</option>
-					</select>
-				</label>
-				<label for="quality"
-					>Quality
-					<select id="quality">
-						<option value="">All qualities</option>
-					</select>
-				</label>
+				<div class="filter">
+					<span>Language</span>
+					<button id="language" class="choice" type="button" data-label="Language">
+						<span class="choice-label">All languages</span>
+						<svg class="choice-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+					</button>
+					<div id="language-menu" class="choice-menu" popover role="listbox" aria-label="Language" tabindex="-1"></div>
+				</div>
+				<div class="filter">
+					<span>Quality</span>
+					<button id="quality" class="choice" type="button" data-label="Quality">
+						<span class="choice-label">All qualities</span>
+						<svg class="choice-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+					</button>
+					<div id="quality-menu" class="choice-menu" popover role="listbox" aria-label="Quality" tabindex="-1"></div>
+				</div>
 			</div>
 			<p id="count"></p>
 			<p id="status" role="status" aria-live="polite"></p>

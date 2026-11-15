@@ -17,10 +17,11 @@ const view = await createChromeProbe(extension, ["--headless=new", "--no-sandbox
 
 /** Self-contained: runs on the extension's voice catalog page. */
 function selectLanguage(language: string) {
-	const filter = document.querySelector<HTMLSelectElement>("#language")
-	if (!filter) throw Error("Language filter is missing")
-	filter.value = language
-	filter.dispatchEvent(new Event("change"))
+	const trigger = document.querySelector<HTMLButtonElement>("#language")
+	const option = document.querySelector<HTMLElement>(`#language-menu [role=option][data-value="${language}"]`)
+	if (!trigger || !option) throw Error("Language filter is missing")
+	trigger.click()
+	option.click()
 }
 
 async function screenshot(path: string, width: number, height: number, transparent = false) {
