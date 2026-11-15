@@ -4,8 +4,8 @@ import { projectRun } from "./runs.ts"
 
 /** Only explicit line breaks authorize removing a printed hyphen. */
 export const layoutHyphenation = /(?<=\p{L})[-\u00ad][\t ]*\r?\n[\t ]*(?=\p{Ll})|\u00ad/gu
-/** PDF pages end with a blank line, so a page-break word continues across more than one newline. */
-export const pdfHyphenation = /(?<=\p{L})[-\u00ad][\t ]*(?:\r?\n)+[\t ]*(?=\p{Ll})|\u00ad/gu
+/** PDF viewers drop every line-end hyphen when copying, so speech does too. */
+export const pdfHyphenation = /(?<=\p{L})[-\u2010\u2011\u00ad][\t ]*(?:\r?\n)+[\t ]*|\u00ad/gu
 
 /** Remove layout hyphenation without changing the DOM offsets used for highlighting. */
 export function normalizeDocument(source: ReadingDocument, pdf = false): ReadingDocument {

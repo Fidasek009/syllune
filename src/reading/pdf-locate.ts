@@ -1,4 +1,4 @@
-import { canonicalText } from "./selection.ts"
+import { matchText } from "./selection.ts"
 
 export interface LocatedPdfText {
 	/** Zero-based index of the page that supplied the selection's first character. */
@@ -20,8 +20,8 @@ interface Segment {
 
 /**
  * Locate a native-viewer selection while paginated text arrives one page at a time.
- * The canonical string grows only by newly indexed pages, so a selection near the
- * front never pays for canonicalizing the rest of a long PDF.
+ * The match key grows only by newly indexed pages, so a selection near the
+ * front never pays for reading the rest of a long PDF.
  */
 export class PdfSelectionSearch {
 	private readonly needle: string
@@ -30,26 +30,13 @@ export class PdfSelectionSearch {
 	private readonly segments: Segment[] = []
 
 	constructor(selection: string) {
-		this.needle = canonicalText(selection).value.trim()
+		this.needle = matchText(selection).value
 		if (!this.needle) throw new Error("Select some PDF text first.")
 	}
 
 	push(pageText: string): LocatedPdfText | undefined {
-		const page = canonicalText(pageText)
-		// A layout hyphen at a page break continues the word when the next page does.
-		let joined = false
-		if (this.text.endsWith("- ") && /^\p{Ll}/u.test(page.value) && /\p{L}$/u.test(this.text.slice(0, -2))) {
-			this.text = this.text.slice(0, -2)
-			this.searchFrom = Math.max(0, this.searchFrom - 2)
-			joined = true
-		}
-		let base = this.text.length
-		// canonicalText keeps one trailing layout space; add a separator only when
-		// the page itself does not already provide one.
-		if (!joined && base && page.value && !this.text.endsWith(" ") && !page.value.startsWith(" ")) {
-			this.text += " "
-			base++
-		}
+		const page = matchText(pageText)
+		const base = this.text.length
 		const index = this.segments.length
 		this.segments.push({ index, base, positions: page.positions, ends: page.ends })
 		this.text += page.value

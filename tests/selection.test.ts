@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 
 import { concatDocuments, overlappingRuns } from "../src/reading/document.ts"
 import { pdfHyphenation } from "../src/reading/normalize.ts"
-import { canonicalText } from "../src/reading/selection.ts"
+import { matchText } from "../src/reading/selection.ts"
 
 test("offset lookup skips unrelated pages while including split runs and layout gaps", () => {
 	const node = {} as Text
@@ -31,16 +31,30 @@ test("concatenated page documents shift offsets while keeping live text bindings
 	expect(document.runs[1]!.node).toBe(rebound)
 })
 
-test("canonical text keeps printed offsets for ligatures, collapsed whitespace and accents", () => {
+test("match key maps compatibility forms and accents back to printed characters", () => {
 	const raw = "The oﬃce   cafe\u0301\nFooter"
-	const canonical = canonicalText(raw)
-	expect(canonical.value).toBe("The office café Footer")
-	expect(raw.slice(canonical.positions[4]!, canonical.ends[9]!)).toBe("oﬃce")
-	expect(raw.slice(canonical.positions[11]!, canonical.ends[14]!)).toBe("cafe\u0301")
+	const key = matchText(raw)
+	expect(key.value).toBe("TheofficecaféFooter")
+	const ligature = key.value.indexOf("f")
+	expect(raw.slice(key.positions[ligature]!, key.ends[ligature]!)).toBe("ﬃ")
+	const accent = key.value.indexOf("é")
+	expect(raw.slice(key.positions[accent]!, key.ends[accent]!)).toBe("e\u0301")
+})
+
+test("match key ignores whitespace and line-end hyphens from both browser viewers", () => {
+	expect(matchText("Jupyter-\nHub").value).toBe("JupyterHub")
+	expect(matchText("JupyterHub").value).toBe("JupyterHub")
+	expect(matchText("tutorial1 . The wall").value).toBe("tutorial1.Thewall")
+	expect(matchText("day-to-day").value).toBe("daytoday")
+	const raw = "Jupyter-\nHub"
+	const key = matchText(raw)
+	const hub = key.value.indexOf("H")
+	expect(raw.slice(key.positions[hub]!, key.ends[hub]!)).toBe("H")
 })
 
 test("PDF hyphenation removes markers without deleting the continuation", () => {
 	expect("nev-\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")
 	expect("nev-\n\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")
+	expect("Jupyter-\nHub".replace(pdfHyphenation, "")).toBe("JupyterHub")
 	expect("day-to-day".replace(pdfHyphenation, "")).toBe("day-to-day")
 })

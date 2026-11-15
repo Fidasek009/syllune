@@ -80,8 +80,10 @@ test("PDF layout line breaks become spaces, with page breaks, genuine hyphens an
 		expect(normalizeDocument({ text, runs: [] }).text).toBe(text)
 })
 
-test("PDF page breaks join hyphenated words while web paragraphs keep them", () => {
+test("PDF page breaks join hyphenated words like the native viewer", () => {
 	expect(normalizeDocument({ text: "in-\n\nfrastructure", runs: [] }, true).text).toBe("infrastructure")
 	expect(normalizeDocument({ text: "in-\n\nfrastructure", runs: [] }).text).toBe("in-\n\nfrastructure")
-	expect(normalizeDocument({ text: "in-\n\nFrance", runs: [] }, true).text).toBe("in-\n\nFrance")
+	expect(normalizeDocument({ text: "in-\n\nFrance", runs: [] }, true).text).toBe("inFrance")
+	expect(normalizeDocument({ text: "Jupyter-\nHub", runs: [] }, true).text).toBe("JupyterHub")
+	expect(normalizeDocument({ text: "in\u2010\n\nfrastructure", runs: [] }, true).text).toBe("infrastructure")
 })

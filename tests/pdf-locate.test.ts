@@ -42,6 +42,30 @@ test("paginated selection search joins a word hyphenated across a page break", (
 	})
 })
 
+test("paginated selection search matches the dehyphenated copy for a capitalised word", () => {
+	const search = new PdfSelectionSearch("wraps the upstream JupyterHub chart")
+	const first = "MDDash is deployed as a Helm chart that wraps the upstream Jupyter-\n\n"
+	const second = "Hub chart as a dependency."
+	expect(search.push(first)).toBeUndefined()
+	expect(search.push(second)).toEqual({
+		startPage: 0,
+		start: first.indexOf("wraps"),
+		endPage: 1,
+		end: second.indexOf("chart") + "chart".length,
+	})
+})
+
+test("paginated selection search ignores viewer spacing around superscript punctuation", () => {
+	const search = new PdfSelectionSearch("tutorial1 . The wall-clock time")
+	const page = "described in a GROMACS lysozyme tutorial1. The wall-clock time for each step."
+	expect(search.push(page)).toEqual({
+		startPage: 0,
+		start: page.indexOf("tutorial1"),
+		endPage: 0,
+		end: page.indexOf("time") + "time".length,
+	})
+})
+
 test("paginated selection search never invents a match", () => {
 	const search = new PdfSelectionSearch("Missing paragraph.")
 	expect(search.push("Only this paragraph exists.\n")).toBeUndefined()

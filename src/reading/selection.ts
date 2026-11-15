@@ -1,5 +1,4 @@
 import { overlappingRuns, type ReadingDocument } from "./document.ts"
-import { pdfHyphenation } from "./normalize.ts"
 import { projectRun } from "./runs.ts"
 
 const nodeIndexes = new WeakMap<ReadingDocument, WeakMap<Text, { first: number; last: number }>>()
@@ -58,34 +57,26 @@ export function selectRange(source: ReadingDocument, range: Range | null): Readi
 }
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
-/** Canonical selection text plus the printed offsets behind every canonical character. */
-export function canonicalText(text: string) {
+const hyphen = /[-\u2010\u2011\u00ad]/u
+
+/**
+ * Browser PDF viewers copy spacing, hyphens and Unicode forms differently from
+ * PDF.js. Match only the remaining characters; each key character keeps the raw
+ * offset of the grapheme it came from.
+ */
+export function matchText(text: string) {
 	let value = "",
 		offset = 0
 	const positions: number[] = []
 	const ends: number[] = []
-	const removed = [...text.matchAll(pdfHyphenation)]
-	let removal = 0
 	for (const { segment: character } of graphemes.segment(text)) {
-		while (removed[removal] && offset >= removed[removal]!.index + removed[removal]![0].length) removal++
-		const deletion = removed[removal]
-		if (deletion && offset >= deletion.index) {
-			offset += character.length
-			continue
-		}
-		if (/\s/u.test(character)) {
-			if (value && !value.endsWith(" ")) {
-				positions.push(offset)
-				ends.push(offset + character.length)
-				value += " "
-			}
-		} else {
-			for (const unit of character.normalize("NFKC").split("")) {
+		if (!/\s/u.test(character))
+			for (const unit of character.normalize("NFKC")) {
+				if (hyphen.test(unit)) continue
 				positions.push(offset)
 				ends.push(offset + character.length)
 				value += unit
 			}
-		}
 		offset += character.length
 	}
 	positions.push(text.length)
