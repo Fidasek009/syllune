@@ -39,6 +39,7 @@ let alive = true
 let allowStart = true
 let initialSelection: string | undefined
 let pendingSelection: ReadingDocument | undefined
+let pendingSelectionError: string | undefined
 let pendingWholeDocument = false
 let pendingSelectionKey: string | undefined
 const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
@@ -208,14 +209,13 @@ function pageDocuments(from: number, to: number): ReadingDocument {
 	const parts: ReadingDocument[] = []
 	for (let number = from; number <= to; number++) {
 		const state = pageStates[number - 1]
-		if (!state) throw new Error("Select some PDF text first.")
+		if (!state) throw new Error("This PDF page is not available.")
 		parts.push(pageDocument(state))
 	}
 	return concatDocuments(parts)
 }
 
-function pageAt(node: Node | null): PageState | undefined {
-	if (!node) return undefined
+function pageAt(node: Node): PageState | undefined {
 	if (node instanceof Text) return owners.get(node)
 	const element = node instanceof Element ? node : node.parentElement
 	const section = element?.closest(".pdf-page")
@@ -233,6 +233,11 @@ function pageBounds(range: Range) {
 	return from === undefined || to === undefined ? undefined : { from, to }
 }
 
+/** Ctrl+A selects the page container, not a page. */
+function wholeDocumentSelection(range: Range) {
+	return !pageAt(range.startContainer) && !pageAt(range.endContainer) && range.intersectsNode(pages)
+}
+
 function selectedDocument(range: Range): ReadingDocument | undefined {
 	const first = pageAt(range.startContainer)
 	const last = pageAt(range.endContainer)
@@ -241,55 +246,72 @@ function selectedDocument(range: Range): ReadingDocument | undefined {
 			? { from: Math.min(first.number, last.number), to: Math.max(first.number, last.number) }
 			: pageBounds(range)
 	if (!bounds) return undefined
+	for (let number = bounds.from; number <= bounds.to; number++) {
+		const state = pageStates[number - 1]
+		if (!state) throw new Error("This PDF page is not available.")
+		if (!state.content) throw new Error("Some selected pages are still being prepared. Try again in a moment.")
+	}
 	return normalizeDocument(selectRange(pageDocuments(bounds.from, bounds.to), range), true)
+}
+
+function resetPendingSelection() {
+	pendingSelection = undefined
+	pendingSelectionError = undefined
+	pendingWholeDocument = false
 }
 
 function captureSelection() {
 	const selection = getSelection()
 	if (!selection?.toString().trim() || !selection.rangeCount) return
 	const range = selection.getRangeAt(0)
+	if (wholeDocumentSelection(range)) {
+		pendingSelection = undefined
+		pendingSelectionError = undefined
+		pendingWholeDocument = true
+		return
+	}
 	try {
 		pendingSelection = selectedDocument(range)
-		// Ctrl+A selects the page container, not a page. Reading the whole document
-		// is still what the user asked for, so route it through article preparation.
-		pendingWholeDocument = !pendingSelection && range.intersectsNode(pages)
-	} catch {
+		pendingSelectionError = undefined
+		pendingWholeDocument = false
+	} catch (error) {
 		pendingSelection = undefined
+		pendingSelectionError = describe(error)
 		pendingWholeDocument = false
 	}
 }
-function takeSelection(): ReadingDocument | undefined {
+
+async function takeSelection(): Promise<ReadingDocument | undefined> {
 	const selection = getSelection()
-	let captured = pendingSelection
+	const captured = pendingSelection
+	const failure = pendingSelectionError
+	const whole = pendingWholeDocument
+	resetPendingSelection()
 	if (selection?.toString().trim() && selection.rangeCount) {
-		try {
-			captured = selectedDocument(selection.getRangeAt(0))
-		} catch {
-			captured = undefined
-		}
+		const range = selection.getRangeAt(0)
+		selection.removeAllRanges()
+		if (wholeDocumentSelection(range)) return articleDocument()
+		return selectedDocument(range)
 	}
-	pendingSelection = undefined
 	selection?.removeAllRanges()
+	if (whole) return articleDocument()
+	if (failure) throw new Error(failure)
 	return captured
 }
+
 function takeWholeDocumentSelection() {
 	const whole = pendingWholeDocument
 	pendingWholeDocument = false
 	return whole
 }
+
 document.addEventListener("selectionchange", captureSelection)
 pages.addEventListener("contextmenu", captureSelection)
 pages.addEventListener("pointerdown", (event) => {
-	if (event.button === 0) {
-		pendingSelection = undefined
-		pendingWholeDocument = false
-	}
+	if (event.button === 0) resetPendingSelection()
 })
 document.addEventListener("keydown", (event) => {
-	if (event.key === "Escape" || event.key.startsWith("Arrow")) {
-		pendingSelection = undefined
-		pendingWholeDocument = false
-	}
+	if (event.key === "Escape" || event.key.startsWith("Arrow")) resetPendingSelection()
 })
 
 function setPageMetrics(section: HTMLElement, viewport: PageState["viewport"], scale: number) {
@@ -361,8 +383,7 @@ function zoomTo(value: number) {
 }
 
 function clearMapping() {
-	pendingSelection = undefined
-	pendingWholeDocument = false
+	resetPendingSelection()
 	CSS.highlights?.delete(highlightKey)
 }
 
@@ -377,7 +398,16 @@ function describe(error: unknown) {
 	return error instanceof Error ? error.message : "This PDF could not be read."
 }
 
-async function start(mode: "article" | "selection", initial?: string): Promise<boolean> {
+function fail(error: unknown) {
+	const message = describe(error)
+	if (alive) {
+		status.setAttribute("aria-live", "polite")
+		status.textContent = message
+	}
+	return message
+}
+
+async function start(mode: "article" | "selection", initial?: string): Promise<void> {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
 	const started = await session.start(async () => {
@@ -387,24 +417,23 @@ async function start(mode: "article" | "selection", initial?: string): Promise<b
 			return source
 		}
 		if (initial) return selectionLocated.promise
-		const selected = takeSelection()
+		const selected = await takeSelection()
 		if (!selected) throw new Error("Select some PDF text first.")
 		return selected
 	})
-	if (!started || !alive) return false
+	if (!started || !alive) return
 	clearMapping()
 	status.textContent = ""
 	status.setAttribute("aria-live", "polite")
 	if (frame?.isConnected) {
 		frame.contentWindow?.postMessage(sourceChangedMessage(), location.origin)
-		return true
+		return
 	}
 	frame = document.createElement("iframe")
 	frame.title = "Syllune playback controls"
 	if (import.meta.env.BROWSER !== "firefox") frame.allow = "autoplay"
 	frame.src = `${browser.runtime.getURL("/player.html")}#${session.id}`
 	controls.append(frame)
-	return true
 }
 
 async function handleCommand(command: PdfCommand) {
@@ -418,16 +447,12 @@ async function handleCommand(command: PdfCommand) {
 		return
 	}
 	const whole = command.mode === "selection" && takeWholeDocumentSelection()
-	const reading = start(whole ? "article" : command.mode)
-	if ((command.mode === "article" || whole) && !articleBuilt) {
+	const mode = whole ? "article" : command.mode
+	const reading = start(mode)
+	if (mode === "article" && !articleBuilt) {
 		// Accept preparation without holding the background's routing lock until
 		// indexing finishes. A newer selection/stop can invalidate this request.
-		void reading.catch((error: unknown) => {
-			if (alive) {
-				status.setAttribute("aria-live", "polite")
-				status.textContent = describe(error)
-			}
-		})
+		void reading.catch(fail)
 		return
 	}
 	await reading
@@ -447,12 +472,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender) => {
 			await handleCommand(message)
 			return { ok: true }
 		} catch (error) {
-			const failure = describe(error)
-			if (alive) {
-				status.setAttribute("aria-live", "polite")
-				status.textContent = failure
-			}
-			return { ok: false, error: failure }
+			return { ok: false, error: fail(error) }
 		}
 	})()
 })
@@ -603,10 +623,6 @@ function articleDocument(): Promise<ReadingDocument> {
 			parts.push(pageDocument(state))
 			await yieldToMain()
 		}
-		if (!frame) {
-			status.setAttribute("aria-live", "off")
-			status.textContent = "Preparing text"
-		}
 		const reading = normalizeDocument(concatDocuments(parts), true)
 		articleBuilt = true
 		if (!frame) {
@@ -722,12 +738,7 @@ async function load() {
 			const reading = start("selection", initialSelection)
 			locationRevision = session.revision
 			wouldLocate = true
-			void reading.catch((error: unknown) => {
-				if (alive) {
-					status.setAttribute("aria-live", "polite")
-					status.textContent = describe(error)
-				}
-			})
+			void reading.catch(fail)
 		}
 	}
 	GlobalWorkerOptions.workerSrc = new URL("/pdf-runtime/pdf.worker.mjs", location.href).href
@@ -796,32 +807,20 @@ async function load() {
 	status.textContent = ""
 	if (wouldLocate && initialSelection) {
 		void locateInitialSelection(initialSelection, locationRevision)
-			.catch((error: unknown) => {
-				if (alive) {
-					status.setAttribute("aria-live", "polite")
-					status.textContent = describe(error)
-				}
-			})
+			.catch(fail)
 			.finally(() => {
 				if (alive && !articlePromise) void fillPageShells().catch(() => {})
 			})
 		return
 	}
 	if (allowStart && alive) {
-		void start("article").catch((error: unknown) => {
-			if (alive) {
-				status.setAttribute("aria-live", "polite")
-				status.textContent = describe(error)
-			}
-		})
+		void start("article").catch(fail)
 	}
 }
 
 void load().catch((error) => {
 	documentReady.reject(error)
 	selectionLocated.reject(error)
-	status.setAttribute("aria-live", "polite")
 	if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
-	if (!alive) return
-	status.textContent = describe(error)
+	fail(error)
 })

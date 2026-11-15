@@ -16,7 +16,10 @@ interface Segment {
 	base: number
 	positions: number[]
 	ends: number[]
+	text: string
 }
+
+const wordCharacter = /[\p{L}\p{N}]/u
 
 /**
  * Locate a native-viewer selection while paginated text arrives one page at a time.
@@ -38,11 +41,19 @@ export class PdfSelectionSearch {
 		const page = matchText(pageText)
 		const base = this.text.length
 		const index = this.segments.length
-		this.segments.push({ index, base, positions: page.positions, ends: page.ends })
+		this.segments.push({ index, base, positions: page.positions, ends: page.ends, text: pageText })
 		this.text += page.value
-		const match = this.text.indexOf(this.needle, this.searchFrom)
+		let match = this.text.indexOf(this.needle, this.searchFrom)
+		while (match >= 0) {
+			const located = this.locate(match)
+			if (located) return located
+			match = this.text.indexOf(this.needle, match + 1)
+		}
 		this.searchFrom = Math.max(0, this.text.length - this.needle.length + 1)
-		if (match < 0) return undefined
+		return undefined
+	}
+
+	private locate(match: number): LocatedPdfText | undefined {
 		const first = this.segmentAt(match)
 		const last = this.segmentAt(match + this.needle.length - 1)
 		if (first === undefined || last === undefined)
@@ -51,7 +62,16 @@ export class PdfSelectionSearch {
 		const end = last.ends[match + this.needle.length - 1 - last.base]
 		if (start === undefined || end === undefined)
 			throw new Error("The selection could not be mapped to the printed text.")
-		return { startPage: first.index, start, endPage: last.index, end }
+		return this.wordBoundary(first, start) && this.wordBoundary(last, end)
+			? { startPage: first.index, start, endPage: last.index, end }
+			: undefined
+	}
+
+	/** Reject a match that begins or ends inside a printed word. */
+	private wordBoundary(segment: Segment, offset: number) {
+		const previous = segment.text[offset - 1]
+		const next = segment.text[offset]
+		return !previous || !next || !wordCharacter.test(previous) || !wordCharacter.test(next)
 	}
 
 	private segmentAt(position: number): Segment | undefined {

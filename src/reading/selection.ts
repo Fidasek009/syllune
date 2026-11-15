@@ -71,7 +71,7 @@ export function matchText(text: string) {
 	const ends: number[] = []
 	for (const { segment: character } of graphemes.segment(text)) {
 		if (!/\s/u.test(character))
-			for (const unit of character.normalize("NFKC")) {
+			for (const unit of character.normalize("NFKC").split("")) {
 				if (hyphen.test(unit)) continue
 				positions.push(offset)
 				ends.push(offset + character.length)
@@ -79,6 +79,5 @@ export function matchText(text: string) {
 			}
 		offset += character.length
 	}
-	positions.push(text.length)
 	return { value, positions, ends }
 }

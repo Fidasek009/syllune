@@ -66,6 +66,30 @@ test("paginated selection search ignores viewer spacing around superscript punct
 	})
 })
 
+test("paginated selection search keeps offsets after astral characters", () => {
+	for (const page of ["One 😀 marker then the target.", "Two 😀😀 markers then the target."]) {
+		const search = new PdfSelectionSearch("then the target.")
+		expect(search.push(page)).toEqual({
+			startPage: 0,
+			start: page.indexOf("then the target."),
+			endPage: 0,
+			end: page.length,
+		})
+	}
+})
+
+test("paginated selection search rejects a match that starts inside a word", () => {
+	const search = new PdfSelectionSearch("in a")
+	expect(search.push("The final answer.\n")).toBeUndefined()
+	const page = "Put it in a box.\n"
+	expect(search.push(page)).toEqual({
+		startPage: 1,
+		start: page.indexOf("in a"),
+		endPage: 1,
+		end: page.indexOf("in a") + "in a".length,
+	})
+})
+
 test("paginated selection search never invents a match", () => {
 	const search = new PdfSelectionSearch("Missing paragraph.")
 	expect(search.push("Only this paragraph exists.\n")).toBeUndefined()

@@ -14,8 +14,11 @@ import {
 	highlightPdfText,
 	inspectDistantPdf,
 	inspectPdf,
+	pdfReaderReady,
+	type PdfReaderState,
 	readCrossPageText,
 	readEarlyPdfSelection,
+	readPdfReaderState,
 	savePdfSelection,
 } from "./pdf-page.ts"
 import {
@@ -143,15 +146,7 @@ async function probe() {
 			console.log(JSON.stringify({ source, pages, firstPageMs, zoom }))
 			return
 		}
-		const ready = await waitForPdf(
-			() =>
-				view.evaluate<{ status: string; player: boolean }>(
-					"({status: document.querySelector('#status')?.textContent ?? '', player: !!document.querySelector('iframe')})",
-				),
-			({ status, player }) =>
-				(player && status === "") ||
-				(status.length > 0 && !/^(?:Opening PDF|Preparing text|Finding your selection)/u.test(status)),
-		)
+		const ready = await waitForPdf(() => view.evaluate<PdfReaderState>(readPdfReaderState), pdfReaderReady)
 		if (!ready.player || ready.status) throw new Error(ready.status || "The PDF player did not open")
 		const articleReadyMs = performance.now() - started
 		console.log("PDF article ready:", JSON.stringify({ articleReadyMs }))

@@ -52,6 +52,16 @@ test("match key ignores whitespace and line-end hyphens from both browser viewer
 	expect(raw.slice(key.positions[hub]!, key.ends[hub]!)).toBe("H")
 })
 
+test("match key keeps raw offsets after astral characters", () => {
+	const raw = "One 😀 marker then the target."
+	const key = matchText(raw)
+	const target = key.value.indexOf("target")
+	expect(key.positions[target]).toBe(raw.indexOf("target"))
+	const last = key.value.length - 1
+	expect(key.positions[last]).toBe(raw.length - 1)
+	expect(key.ends[last]).toBe(raw.length)
+})
+
 test("PDF hyphenation removes markers without deleting the continuation", () => {
 	expect("nev-\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")
 	expect("nev-\n\nertheless".replace(pdfHyphenation, "")).toBe("nevertheless")

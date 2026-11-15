@@ -23,7 +23,7 @@ If the span cannot be located or its text layer cannot be mapped, playback does 
 
 The scan follows reading order, so cost grows with the page distance. On the Linux Chromium test machine with a warm voice, a selection on page 400 of a 462-page synthetic PDF opened the player after 2.6 seconds; a page-1 selection opened after 1.0 second. Whole-PDF preparation for the same document took 3.5 seconds. These numbers measure page location and player readiness, not first-audio latency or target hardware.
 
-If the selected text appears more than once, the native handoff reads the first match. Select the passage inside Syllune's reader when the exact occurrence matters; that selection maps directly and is exact.
+If the selected text appears more than once, the native handoff reads the first match that does not start or end inside a printed word. Select the passage inside Syllune's reader when the exact occurrence matters; that selection maps directly and is exact.
 
 ## Firefox/Zen: first words of a new reading clip can be inaudible
 
