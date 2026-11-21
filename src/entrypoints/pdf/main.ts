@@ -213,6 +213,7 @@ function ensureText(state: PageState): Promise<void> {
 			run.node = node
 			owners.set(node, state)
 		}
+		repairDragSelection(state)
 	})().catch((error) => {
 		delete state.textReady
 		throw error
@@ -422,12 +423,62 @@ function takeWholeDocumentSelection() {
 
 document.addEventListener("selectionchange", captureSelection)
 pages.addEventListener("contextmenu", captureSelection)
+
+/**
+ * A drag that crosses a page whose text layer is still rendering has no text to
+ * resolve against, so the browser parks the selection end at the top of that
+ * page. Remember the pointer so the end can be restored when the text arrives.
+ */
+let drag: { x: number; y: number; moved: boolean } | undefined
 pages.addEventListener("pointerdown", (event) => {
-	if (event.button === 0) resetPendingSelection()
+	if (event.button !== 0) return
+	resetPendingSelection()
+	drag = { x: event.clientX, y: event.clientY, moved: false }
 })
+window.addEventListener("pointermove", (event) => {
+	if (!drag || !(event.buttons & 1)) return
+	drag.x = event.clientX
+	drag.y = event.clientY
+	drag.moved = true
+})
+function endDrag() {
+	drag = undefined
+}
+window.addEventListener("pointerup", endDrag)
+window.addEventListener("pointercancel", endDrag)
+window.addEventListener("blur", endDrag)
 document.addEventListener("keydown", (event) => {
 	if (event.key === "Escape" || event.key.startsWith("Arrow")) resetPendingSelection()
 })
+
+function caretAt(x: number, y: number) {
+	const range = document.caretRangeFromPoint?.(x, y)
+	if (range) return range
+	const position = document.caretPositionFromPoint?.(x, y)
+	if (!position) return undefined
+	const caret = document.createRange()
+	caret.setStart(position.offsetNode, position.offset)
+	caret.collapse(true)
+	return caret
+}
+
+function repairDragSelection(state: PageState) {
+	if (!drag?.moved) return
+	const selection = getSelection()
+	if (!selection?.rangeCount || !selection.anchorNode?.isConnected) return
+	const caret = caretAt(drag.x, drag.y)
+	if (!caret) return
+	const node = caret.startContainer
+	const element = node instanceof Element ? node : node.parentElement
+	if (element?.closest(".pdf-page") !== state.section) return
+	const range = selection.getRangeAt(0)
+	if (range.endContainer === caret.startContainer && range.endOffset === caret.startOffset) return
+	try {
+		selection.extend(caret.startContainer, caret.startOffset)
+	} catch {
+		// Keep the browser's endpoint if it cannot be moved.
+	}
+}
 
 function setPageMetrics(section: HTMLElement, viewport: PageState["viewport"], scale: number) {
 	section.style.width = `${viewport.width}px`

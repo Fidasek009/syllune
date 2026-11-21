@@ -414,7 +414,66 @@ async function checkPdfSelectionInBrowser() {
 		await new Promise<void>((resolve) => setTimeout(resolve, 25))
 	if (!document.querySelector<HTMLIFrameElement>("iframe")?.contentDocument?.querySelector("#close"))
 		throw Error("PDF reader did not restore after the reuse check")
+	// A drag that reaches a page before its text layer renders must not strand
+	// the selection end at the top of that page.
+	const unrendered = [...document.querySelectorAll<HTMLElement>(".pdf-page")]
+		.reverse()
+		.find((page) => page.querySelector(".textLayer")?.childNodes.length === 0)
+	if (!unrendered) throw Error("PDF fixture has no unrendered page for the drag check")
+	unrendered.scrollIntoView()
+	const unrenderedLayer = unrendered.querySelector<HTMLDivElement>(".textLayer")!
+	const stranding = document.createRange()
+	stranding.selectNodeContents(unrenderedLayer)
+	stranding.collapse(true)
+	pageSelection().removeAllRanges()
+	pageSelection().addRange(stranding)
+	const pageRect = unrendered.getBoundingClientRect()
+	const pointer = {
+		x: Math.round(pageRect.left + pageRect.width / 2),
+		y: Math.round(pageRect.top + pageRect.height / 3),
+	}
+	element<HTMLDivElement>("#pages").dispatchEvent(
+		new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: pointer.x, clientY: pointer.y }),
+	)
+	window.dispatchEvent(
+		new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: pointer.x, clientY: pointer.y }),
+	)
+	const dragDeadline = performance.now() + 10000
+	while (unrenderedLayer.childNodes.length === 0 && performance.now() < dragDeadline)
+		await new Promise<void>((resolve) => setTimeout(resolve, 25))
+	await new Promise<void>((resolve) => setTimeout(resolve, 50))
+	window.dispatchEvent(
+		new PointerEvent("pointerup", { bubbles: true, buttons: 0, clientX: pointer.x, clientY: pointer.y }),
+	)
+	const dragCaret = document.caretRangeFromPoint
+		? document.caretRangeFromPoint(pointer.x, pointer.y)
+		: (() => {
+				const position = document.caretPositionFromPoint?.(pointer.x, pointer.y)
+				if (!position) return null
+				const range = document.createRange()
+				range.setStart(position.offsetNode, position.offset)
+				range.collapse(true)
+				return range
+			})()
+	const dragSelection = pageSelection()
+	const dragRange = dragSelection.rangeCount ? dragSelection.getRangeAt(0) : undefined
+	if (
+		!dragCaret ||
+		!dragRange ||
+		dragRange.endContainer !== dragCaret.startContainer ||
+		dragRange.endOffset !== dragCaret.startOffset
+	)
+		throw Error(
+			"A drag across an unrendered PDF page was stranded at its top: " +
+				JSON.stringify({
+					pointer,
+					end: dragRange && [dragRange.endContainer.nodeName, dragRange.endOffset],
+					caret: dragCaret && [dragCaret.startContainer.nodeName, dragCaret.startOffset],
+					page: unrendered.getAttribute("aria-label"),
+				}),
+		)
 	return {
+		dragRepair: true,
 		toolbarReopensClosedControls: true,
 		contextMenuRestart: true,
 		repeatedNativeSelectionReusesReader: true,
