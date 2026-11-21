@@ -211,14 +211,6 @@ function ensureText(state: PageState): Promise<void> {
 	}))
 }
 
-let linkFailureShown = false
-
-function linksUnavailable() {
-	if (!alive || linkFailureShown) return
-	linkFailureShown = true
-	status.textContent = "Some PDF links could not be shown."
-}
-
 /** Annotations load lazily: only pages near the viewport need their links. */
 function ensureLinks(state: PageState): Promise<void> {
 	return (state.linksReady ??= (async () => {
@@ -258,10 +250,8 @@ function ensureLinks(state: PageState): Promise<void> {
 			fragment.append(link)
 		}
 		state.links.replaceChildren(fragment)
-	})().catch((error) => {
-		delete state.linksReady
-		linksUnavailable()
-		throw error
+	})().catch(() => {
+		fail(new Error("Some PDF links could not be shown."))
 	}))
 }
 
@@ -273,6 +263,7 @@ function isPageRef(value: unknown): value is PageRef {
 	return typeof ref.num === "number" && typeof ref.gen === "number"
 }
 
+/** Clears the fixed header when a link jumps to a destination. */
 const PAGE_TOP_INSET = 72
 let navigation = 0
 
@@ -647,7 +638,7 @@ const observer = new IntersectionObserver(
 			if (!item) continue
 			item.visible = entry.isIntersecting
 			if (!entry.isIntersecting) item.task?.cancel()
-			else void ensureLinks(item).catch(() => {})
+			else void ensureLinks(item)
 			queuePaint(item)
 		}
 	},

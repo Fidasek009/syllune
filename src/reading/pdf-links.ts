@@ -5,7 +5,7 @@ export interface PdfLinkAnnotation {
 	dest?: unknown
 }
 
-const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "ftp:", "mailto:", "tel:"])
+const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"])
 
 export function isPdfLinkAnnotation(value: unknown): value is PdfLinkAnnotation {
 	if (typeof value !== "object" || value === null) return false

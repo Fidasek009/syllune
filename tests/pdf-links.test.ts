@@ -10,6 +10,7 @@ test("PDF link annotations require a rectangle and a usable target", () => {
 	expect(isPdfLinkAnnotation({ subtype: "Link", rect, dest: [3, { name: "XYZ" }, 0, 700, 1] })).toBe(true)
 	expect(isPdfLinkAnnotation({ subtype: "Link", rect, hidden: true, url: "https://example.org/" })).toBe(false)
 	expect(isPdfLinkAnnotation({ subtype: "Text", rect, url: "https://example.org/" })).toBe(false)
+	// PDF.js exposes rejected schemes as unsafeUrl only; the guard must ignore them.
 	expect(isPdfLinkAnnotation({ subtype: "Link", rect, unsafeUrl: "javascript:alert(1)" })).toBe(false)
 	expect(isPdfLinkAnnotation({ subtype: "Link", url: "https://example.org/" })).toBe(false)
 	expect(isPdfLinkAnnotation({ subtype: "Link", rect: [0, 0, 10], url: "https://example.org/" })).toBe(false)
@@ -18,14 +19,21 @@ test("PDF link annotations require a rectangle and a usable target", () => {
 })
 
 test("external PDF links open only through browser-safe protocols", () => {
-	for (const url of ["https://example.org/", "http://example.org/", "ftp://example.org/", "mailto:a@example.org"])
+	for (const url of ["https://example.org/", "http://example.org/", "mailto:a@example.org"])
 		expect(externalLinkTarget(url)?.protocol).toBe(new URL(url).protocol)
 	expect(externalLinkTarget("tel:+420123456789")?.protocol).toBe("tel:")
-	for (const url of ["javascript:alert(1)", "data:text/html,hi", "file:///etc/passwd", "/relative", ""])
+	for (const url of [
+		"javascript:alert(1)",
+		"data:text/html,hi",
+		"file:///etc/passwd",
+		"ftp://example.org/",
+		"/relative",
+		"",
+	])
 		expect(externalLinkTarget(url)).toBeUndefined()
 })
 
-test("destination anchors follow the page point named by the PDF viewer", () => {
+test("destination anchors read the top coordinate from each destination mode", () => {
 	const ref = { num: 4, gen: 0 }
 	expect(destinationTop([ref, { name: "XYZ" }, 12, 700, 2])).toBe(700)
 	expect(destinationTop([ref, { name: "XYZ" }, 12, null, 2])).toBeUndefined()

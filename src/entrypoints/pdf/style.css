@@ -140,7 +140,6 @@ button:focus-visible {
 	position: absolute;
 	border-radius: 2px;
 	pointer-events: auto;
-	cursor: pointer;
 }
 .pdf-link:hover {
 	background: color-mix(in srgb, var(--accent) 18%, transparent);
