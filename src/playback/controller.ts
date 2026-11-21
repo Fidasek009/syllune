@@ -102,6 +102,10 @@ export class PlaybackController {
 	prepare() {
 		if (this.closed) return
 		this.halt()
+		// Drop the old scope; initialization supplies the next one.
+		this.text = ""
+		this.chunks = []
+		this.cursor = 0
 		this.began = this.now()
 		this.phase = { kind: "preparing", intent: "play" }
 		this.changed()
@@ -128,6 +132,8 @@ export class PlaybackController {
 		this.voice = voice
 		this.language = language
 		this.speed = speed
+		// No scope yet: keep the choice for the next Play or selection.
+		if (!this.text) return
 		this.chunks = readingChunks(this.text, language)
 		const index = Math.max(
 			0,
