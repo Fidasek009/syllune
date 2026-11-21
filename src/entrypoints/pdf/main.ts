@@ -314,25 +314,60 @@ pages.addEventListener("contextmenu", captureSelection)
  * resolve against, so the browser parks the selection end at the top of that
  * page. Remember the pointer so the end can be restored when the text arrives.
  */
-let drag: { x: number; y: number; moved: boolean } | undefined
+interface SelectionDrag {
+	x: number
+	y: number
+	moved: boolean
+	anchor?: Node
+}
+let selectionDrag: SelectionDrag | undefined
+/** A drag released over a page whose text layer had not rendered yet. */
+let pendingDragRepair: { x: number; y: number; anchor: Node; page: HTMLElement } | undefined
+
 pages.addEventListener("pointerdown", (event) => {
 	if (event.button !== 0) return
 	resetPendingSelection()
-	drag = { x: event.clientX, y: event.clientY, moved: false }
+	pendingDragRepair = undefined
+	selectionDrag = { x: event.clientX, y: event.clientY, moved: false }
 })
-window.addEventListener("pointermove", (event) => {
-	if (!drag || !(event.buttons & 1)) return
-	drag.x = event.clientX
-	drag.y = event.clientY
-	drag.moved = true
+window.addEventListener(
+	"pointermove",
+	(event) => {
+		if (!selectionDrag) return
+		// A release over the player iframe never reaches this window's pointerup.
+		if (!(event.buttons & 1)) {
+			selectionDrag = undefined
+			return
+		}
+		selectionDrag.x = event.clientX
+		selectionDrag.y = event.clientY
+		selectionDrag.moved = true
+		if (selectionDrag.anchor === undefined) {
+			const anchor = getSelection()?.anchorNode
+			if (anchor) selectionDrag.anchor = anchor
+		}
+	},
+	{ passive: true },
+)
+window.addEventListener("pointerup", (event) => {
+	const drag = selectionDrag
+	selectionDrag = undefined
+	if (!drag?.moved || !drag.anchor) return
+	const selection = getSelection()
+	if (!selection?.rangeCount || selection.anchorNode !== drag.anchor) return
+	const element = document.elementFromPoint(event.clientX, event.clientY)
+	const page = element ? pageAt(element) : undefined
+	if (!page || page.container.childNodes.length) return
+	pendingDragRepair = { x: event.clientX, y: event.clientY, anchor: drag.anchor, page: page.section }
 })
 function endDrag() {
-	drag = undefined
+	selectionDrag = undefined
+	pendingDragRepair = undefined
 }
-window.addEventListener("pointerup", endDrag)
 window.addEventListener("pointercancel", endDrag)
 window.addEventListener("blur", endDrag)
 document.addEventListener("keydown", (event) => {
+	endDrag()
 	if (event.key === "Escape" || event.key.startsWith("Arrow")) resetPendingSelection()
 })
 
@@ -348,10 +383,18 @@ function caretAt(x: number, y: number) {
 }
 
 function repairDragSelection(state: PageState) {
-	if (!drag?.moved) return
+	const pending = selectionDrag?.moved ? undefined : pendingDragRepair
+	const pointer = selectionDrag?.moved ? selectionDrag : pendingDragRepair
+	if (!pointer) return
+	if (pending) {
+		// Only the page the user released over uses up the pending repair, and
+		// only while the released drag is still the current selection.
+		if (pending.page !== state.section) return
+		pendingDragRepair = undefined
+	}
 	const selection = getSelection()
-	if (!selection?.rangeCount || !selection.anchorNode?.isConnected) return
-	const caret = caretAt(drag.x, drag.y)
+	if (!selection?.rangeCount || (pending && selection.anchorNode !== pending.anchor)) return
+	const caret = caretAt(pointer.x, pointer.y)
 	if (!caret) return
 	const node = caret.startContainer
 	const element = node instanceof Element ? node : node.parentElement
