@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 
 import { normalizeDocument } from "../src/reading/normalize.ts"
 import { PdfSelectionSearch } from "../src/reading/pdf-locate.ts"
-import { selectRange, sliceDocument } from "../src/reading/selection.ts"
+import { selectionBounds, sliceDocument } from "../src/reading/selection.ts"
 
 test("PDF selection follows late text-layer binding through normalization and slicing", () => {
 	const values = ["nev-", "ertheless"]
@@ -24,8 +24,10 @@ test("PDF selection follows late text-layer binding through normalization and sl
 		endOffset: 9,
 		intersectsNode: (node: Node) => nodes.includes(node as Text),
 	} as unknown as Range
-	expect(selectRange(canonical, range).text).toBe("nevertheless")
-	expect(selectRange(scope, range).text).toBe("nevertheless")
+	const canonicalSelection = selectionBounds(canonical, range)
+	expect(sliceDocument(canonical, canonicalSelection.start, canonicalSelection.end).text).toBe("nevertheless")
+	const scopeSelection = selectionBounds(scope, range)
+	expect(sliceDocument(scope, scopeSelection.start, scopeSelection.end).text).toBe("nevertheless")
 	expect(scope.runs[0]!.node).toBe(nodes[0]!)
 	expect(scope.runs[1]!.node).toBe(nodes[1]!)
 })

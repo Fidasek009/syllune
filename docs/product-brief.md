@@ -1,6 +1,6 @@
 # Product brief
 
-Started **2026-10-29**, updated **2026-11-13**. Product answers below are confirmed by the user. The current implementation and open acceptance gates are described in [engineering](engineering.md) and [status](feasibility-status.md).
+Started **2026-10-29**, updated **2026-11-21**. Product answers below are confirmed by the user. The current implementation and open acceptance gates are described in [engineering](engineering.md) and [status](feasibility-status.md).
 
 ## Confirmed experience
 
@@ -16,7 +16,7 @@ Lead with **Natural-sounding voices. On your computer.** The owner explicitly co
 
 ## Reading behavior
 
-The primary flow is **select text → right-click → read the selection nearly instantly**. Reading only that selection is the defined behavior; continuing into the rest of the article would be a different action. Article reading is available from the browser action or page context menu.
+The primary flow is **select text → right-click → read the selection nearly instantly**. Playback stops at the end of the selection and never continues silently. Pressing Play after it finishes continues with the text after the selection; article reading is also available directly from the browser action or page context menu.
 
 The user considers Piper's medium-quality voices decent and values choosing a lower-quality model for better speed. They dislike missing highlighting, broken model deletion, and playback speed changes that raise voice pitch. A pitch-preserving speed slider is mandatory.
 
@@ -110,10 +110,13 @@ A progressing download must not stop merely because it takes a long time. Report
 
 ## Play respects the current selection — 2026-10-30
 
-If text is selected when the user presses Play in the existing overlay, read only that selection, replacing the previous article or selection. Preserve exact selection boundaries and highlighting on web pages and in our PDF reader. With no fresh selection, resume or replay the current reading scope. Previous/next and playback completion stay within that scope. Pause keeps its usual behavior.
+If text is selected when the user presses Play in the existing overlay, read only that selection, replacing the previous article or selection. Preserve exact selection boundaries and highlighting on web pages and in our PDF reader. With no fresh selection, resume the current reading scope; once the scope has finished, Play continues with the text after it on the same page or PDF, and replays the scope only when nothing readable remains. Continuing extends the scope to that remainder for previous/next navigation. Pause keeps its usual behavior.
 
 Preserve meaningful dots in domains such as `consensus.app`, where “dot” should be spoken. Sentence-ending periods should remain natural pauses. Correct PDF whitespace mapping rather than stripping periods or inserting spaces indiscriminately after them.
 
+## Continue after a finished selection — 2026-11-21
+
+Pressing Play after a selection finishes continues with the text after the selection on web pages and in the PDF reader. The new scope extends to the end of the document, and Play after that replays the scope. Continuation starts only when the user presses Play.
 
 ## Reading polish and recovery — 2026-11-01
 

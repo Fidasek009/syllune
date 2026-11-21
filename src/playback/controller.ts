@@ -36,6 +36,7 @@ interface QueuedClip {
 interface PlayingClip extends QueuedClip {
 	audio: PlaybackAudio
 }
+const noContinuation = async () => null
 
 /** Owns one listening scope. DOM, preferences, transport and native audio stay at its boundaries. */
 export class PlaybackController {
@@ -152,7 +153,7 @@ export class PlaybackController {
 		this.active?.audio.pause()
 		this.changed()
 	}
-	async play(selection: () => Promise<string | null>) {
+	async play(selection: () => Promise<string | null>, continuation: () => Promise<string | null> = noContinuation) {
 		if (this.phase.kind === "preparing" || this.phase.kind === "selecting" || this.phase.kind === "closed") return
 		if (this.playing) {
 			this.pause()
@@ -170,13 +171,21 @@ export class PlaybackController {
 			const selected = await selection()
 			if (current !== this.epoch || this.closed) return
 			if (selected !== null && !selected.trim()) throw new SpeechTextError(playbackCopy.selectionUnavailable)
-			if (selected !== null || previous.kind === "ended" || previous.kind === "failed") {
-				if (selected !== null) {
-					this.text = selected
-					this.chunks = readingChunks(selected, this.language)
+			const restart = selected !== null || previous.kind === "ended"
+			if (selected !== null) {
+				this.text = selected
+				this.chunks = readingChunks(selected, this.language)
+			} else if (previous.kind === "ended") {
+				const next = await continuation()
+				if (current !== this.epoch || this.closed) return
+				if (next !== null && next.trim()) {
+					this.text = next
+					this.chunks = readingChunks(next, this.language)
 				}
+			}
+			if (restart || previous.kind === "failed") {
 				this.phase = { kind: "ready", intent: "play" }
-				await this.begin(selected !== null || previous.kind === "ended" ? 0 : this.cursor, undefined, began)
+				await this.begin(restart ? 0 : this.cursor, undefined, began)
 			} else {
 				this.phase = { kind: "ready", intent: "play" }
 				if (this.active) await this.resume(current)
@@ -187,11 +196,11 @@ export class PlaybackController {
 			if (current === this.epoch && !this.closed) this.fail(error)
 		}
 	}
-	mediaPlay() {
+	mediaPlay(continuation: () => Promise<string | null> = noContinuation) {
 		if (this.phase.kind === "preparing") {
 			this.phase = { kind: "preparing", intent: "play" }
 			this.changed()
-		} else if (!this.playing) void this.play(async () => null)
+		} else if (!this.playing) void this.play(noContinuation, continuation)
 	}
 	unavailable() {
 		if (this.closed) return

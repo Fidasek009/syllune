@@ -3,6 +3,7 @@ import { maximumSessionIdLength } from "./limits.ts"
 export type ReaderCommand =
 	| { command: "document" }
 	| { command: "selection" }
+	| { command: "continue" }
 	| { command: "close" }
 	| { command: "highlight"; start: number; end: number }
 	| { command: "resize"; height: number; width?: number }
@@ -16,7 +17,8 @@ export function isReaderResponse(command: ReaderCommand, value: unknown): value 
 	if (!value || typeof value !== "object") return false
 	if ("error" in value) return typeof value.error === "string"
 	if (command.command === "document") return "text" in value && typeof value.text === "string"
-	if (command.command === "selection") return "text" in value && (value.text === null || typeof value.text === "string")
+	if (command.command === "selection" || command.command === "continue")
+		return "text" in value && (value.text === null || typeof value.text === "string")
 	return "ok" in value && typeof value.ok === "boolean"
 }
 
@@ -32,7 +34,13 @@ export function isReaderRequest(value: unknown): value is ReaderRequest {
 		!("command" in value)
 	)
 		return false
-	if (value.command === "document" || value.command === "selection" || value.command === "close") return true
+	if (
+		value.command === "document" ||
+		value.command === "selection" ||
+		value.command === "continue" ||
+		value.command === "close"
+	)
+		return true
 	if (value.command === "highlight")
 		return (
 			"start" in value &&

@@ -37,7 +37,7 @@ export function sliceDocument(source: ReadingDocument, start: number, end: numbe
 }
 
 /** PDF text spans omit layout spaces; select from the mapped text, not DOM textContent. */
-export function selectRange(source: ReadingDocument, range: Range | null): ReadingDocument {
+export function selectionBounds(source: ReadingDocument, range: Range | null): { start: number; end: number } {
 	if (!range || range.collapsed) throw new Error("Select some PDF text first.")
 	let start: number | undefined
 	let end: number | undefined
@@ -53,7 +53,7 @@ export function selectRange(source: ReadingDocument, range: Range | null): Readi
 		end = run.from + to - run.offset
 	}
 	if (start === undefined || end === undefined) throw new Error("Select some PDF text first.")
-	return sliceDocument(source, start, end)
+	return { start, end }
 }
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
