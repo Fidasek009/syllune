@@ -129,13 +129,17 @@ function updateControls() {
 	play.disabled = !hasVoices || busy
 	previous.disabled = !hasVoices || busy || !controller.canPrevious
 	next.disabled = !hasVoices || busy || !controller.canNext
+	// Voice and speed stay usable while a model loads, so a slow load can be
+	// replaced without closing the reader. A pending selection response still locks them.
+	const locked = !hasVoices || state.kind === "selecting"
 	// Dismiss before disabling: never leave a disabled, focused slider in an open popover.
-	if (busy && speedPanel.matches(":popover-open")) {
+	if (locked && speedPanel.matches(":popover-open")) {
 		speedPanel.hidePopover()
-		if (document.activeElement === speed || document.activeElement === rate) button("sound").focus()
+		if (document.activeElement === speed || document.activeElement === rate)
+			(hasVoices ? button("sound") : button("close")).focus()
 	}
-	if (busy || !hasVoices) voiceMenu.close()
-	speed.disabled = rate.disabled = voiceButton.disabled = !hasVoices || busy
+	if (locked) voiceMenu.close()
+	speed.disabled = rate.disabled = voiceButton.disabled = locked
 	playback.hidden = !hasVoices
 	button("close").title = hasVoices ? "Stop reading" : "Close"
 	button("close").setAttribute("aria-label", button("close").title)
