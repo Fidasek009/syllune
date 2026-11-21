@@ -132,7 +132,7 @@ export class PlaybackController {
 		this.voice = voice
 		this.language = language
 		this.speed = speed
-		// A voice chosen before a scope arrives is applied when initialization sets one.
+		// No scope yet: keep the choice for the next Play or selection.
 		if (!this.text) return
 		this.chunks = readingChunks(this.text, language)
 		const index = Math.max(

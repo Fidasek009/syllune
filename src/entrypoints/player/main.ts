@@ -274,7 +274,8 @@ async function refreshVoices(
 			label: `${voice.name} · ${qualityLabel(voice.quality)} · ${languageLabel(voice)}`,
 		}))
 	let choice: string | undefined
-	for (const preferred of [preferences.voice, previousChoice]) {
+	// A voice the user picked in this reader outranks the stored preference snapshot.
+	for (const preferred of [previousChoice, preferences.voice]) {
 		// Earlier releases stored a speaker suffix after the voice ID.
 		const id = typeof preferred === "string" ? preferred.split("#")[0] : undefined
 		if (id && voiceChoices.some((entry) => entry.value === id)) {
@@ -320,6 +321,10 @@ window.addEventListener("keydown", (event) => {
 async function initialize() {
 	if (controller.closed) return
 	const began = performance.now()
+	// Stored preferences fill only the controls the user has not touched while
+	// this source and the voice list were loading.
+	const speedAtStart = speed.value
+	const volumeAtStart = volume.value
 	controller.prepare()
 	const generation = controller.revision
 	try {
@@ -332,10 +337,16 @@ async function initialize() {
 		if (controller.closed || generation !== controller.revision) return
 		if (!("text" in source) || typeof source.text !== "string" || !source.text.trim())
 			throw new SpeechTextError("Start reading from a page or a text selection.")
-		if (typeof preferences.speed === "number" && preferences.speed >= 0.5 && preferences.speed <= 2)
+		if (
+			speed.value === speedAtStart &&
+			typeof preferences.speed === "number" &&
+			preferences.speed >= 0.5 &&
+			preferences.speed <= 2
+		)
 			speed.value = String(preferences.speed)
 		updateSpeed()
 		if (
+			volume.value === volumeAtStart &&
 			typeof preferences.volume === "number" &&
 			Number.isFinite(preferences.volume) &&
 			preferences.volume >= 0 &&

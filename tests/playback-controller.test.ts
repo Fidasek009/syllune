@@ -149,12 +149,20 @@ test("a voice change while the model loads abandons the first load and plays the
 	expect(f.controller.playing).toBe(true)
 })
 
-test("a voice change before the scope arrives neither reads nor fails the reader", async () => {
-	const f = fixture()
-	await f.controller.restart("voice-b", "en", 1)
+test("a voice change before the scope arrives is kept for the first selection", async () => {
+	const voices: string[] = []
+	const f = fixture({ load: async (voice) => void voices.push(voice) })
+	f.controller.prepare()
+	await f.controller.restart("voice-b", "cs", 1.5)
 	expect(f.controller.state).toMatchObject({ kind: "preparing", intent: "play" })
 	expect(f.inputs).toEqual([])
-	expect(f.audios).toHaveLength(0)
+	f.controller.fail(new Error("The page did not respond."))
+	await f.controller.play(async () => "Nová věta.")
+	await settle()
+	expect(voices).toEqual(["voice-b"])
+	expect(f.inputs).toEqual(["Nová věta."])
+	expect(f.audios).toHaveLength(1)
+	expect(f.audios[0]!.playbackRate).toBe(1.5)
 })
 
 test("closing during synthesis prevents late audio and releases queued outputs", async () => {
@@ -210,6 +218,19 @@ test("shared-model cancellation pauses without a failure or disposing the client
 	await settle()
 	expect(f.controller.state).toEqual({ kind: "ready", intent: "pause" })
 	expect(f.disposals()).toBe(0)
+})
+
+test("a failed re-initialization cannot replay the previous source's text", async () => {
+	const f = fixture()
+	await f.controller.setScope(scope, "voice", "en", 1)
+	await settle()
+	const synthesized = f.inputs.length
+	f.controller.prepare()
+	f.controller.fail(new Error("The page did not respond."))
+	await f.controller.play(async () => null)
+	await settle()
+	expect(f.controller.state.kind).toBe("failed")
+	expect(f.inputs).toHaveLength(synthesized)
 })
 
 test("a failed passage recovers when Play supplies a new selection", async () => {
