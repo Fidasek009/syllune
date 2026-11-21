@@ -116,7 +116,7 @@ Preserve meaningful dots in domains such as `consensus.app`, where “dot” sho
 
 ## Continue after a finished selection — 2026-11-21
 
-Pressing Play after a selection finishes continues with the text after the selection on web pages and in the PDF reader. The new scope extends to the end of the document, and Play after that replays the scope. Continuation starts only when the user presses Play.
+Pressing Play after a selection finishes continues with the text after the selection on web pages and in the PDF reader. The new scope extends to the end of the article or PDF, and Play after that replays the scope. Continuation starts only when the user presses Play.
 
 ## Reading polish and recovery — 2026-11-01
 

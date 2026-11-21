@@ -19,7 +19,7 @@ import { fetchPdf } from "../../reading/pdf-access.ts"
 import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
 import { destinationTop, externalLinkTarget, isPdfLinkAnnotation, linkRects } from "../../reading/pdf-links.ts"
 import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
-import { selectionBounds, sliceDocument } from "../../reading/selection.ts"
+import { continuationStart, selectionBounds, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
 import { parsePdfReaders, readingKeys } from "../../reading/state.ts"
 import "pdfjs-dist/web/pdf_viewer.css"
@@ -361,11 +361,11 @@ function selectedDocument(range: Range): ReadingScope | undefined {
 	}
 	const source = pageDocuments(bounds.from, bounds.to)
 	const selection = selectionBounds(source, range)
-	// Page documents concatenate without separators, so this maps the end into the last page.
-	const lastPageStart = source.text.length - pageStates[bounds.to - 1]!.text.length
+	const endPageLength = pageStates[bounds.to - 1]!.text.length
 	return {
 		document: normalizeDocument(sliceDocument(source, selection.start, selection.end), true),
-		continuation: () => continuationDocument(bounds.to, selection.end - lastPageStart),
+		continuation: () =>
+			continuationDocument(bounds.to, continuationStart(source.text.length, endPageLength, selection.end)),
 	}
 }
 

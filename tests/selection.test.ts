@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 
 import { concatDocuments, overlappingRuns } from "../src/reading/document.ts"
 import { pdfHyphenation } from "../src/reading/normalize.ts"
-import { matchText } from "../src/reading/selection.ts"
+import { continuationStart, matchText } from "../src/reading/selection.ts"
 
 test("offset lookup skips unrelated pages while including split runs and layout gaps", () => {
 	const node = {} as Text
@@ -29,6 +29,12 @@ test("concatenated page documents shift offsets while keeping live text bindings
 	const rebound = { data: "Two" } as Text
 	secondRun.node = rebound
 	expect(document.runs[1]!.node).toBe(rebound)
+})
+
+test("PDF continuation starts inside the end page, including at a page boundary", () => {
+	expect(continuationStart(100, 40, 75)).toBe(15)
+	expect(continuationStart(100, 40, 60)).toBe(0)
+	expect(continuationStart(100, 40, 58)).toBe(0)
 })
 
 test("match key maps compatibility forms and accents back to printed characters", () => {

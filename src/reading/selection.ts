@@ -36,6 +36,13 @@ export function sliceDocument(source: ReadingDocument, start: number, end: numbe
 	}
 }
 
+/** Where the remainder starts inside the page that contains the selection's end. */
+export function continuationStart(sourceLength: number, endPageLength: number, selectionEnd: number): number {
+	// Pages concatenate without separators. A range released at a page boundary can
+	// end before that page's first character, so clamp to the page start.
+	return Math.max(0, selectionEnd - (sourceLength - endPageLength))
+}
+
 /** PDF text spans omit layout spaces; select from the mapped text, not DOM textContent. */
 export function selectionBounds(source: ReadingDocument, range: Range | null): { start: number; end: number } {
 	if (!range || range.collapsed) throw new Error("Select some PDF text first.")

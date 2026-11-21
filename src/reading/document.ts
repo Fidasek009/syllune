@@ -46,8 +46,17 @@ export function overlappingRuns(source: ReadingDocument, start: number, end: num
 	return result
 }
 
+const pageTooLong = "This page is too long to read in one session. Select a smaller section."
+const remainderTooLong =
+	"The rest of this page is too long to read in one session. Select a smaller section to continue."
+
 /** Collect text and live DOM offsets from a subtree, optionally within a range. */
-function capture(root: Node, range: Range | null, excludeChrome: boolean): ReadingDocument | undefined {
+function capture(
+	root: Node,
+	range: Range | null,
+	excludeChrome: boolean,
+	tooLong = pageTooLong,
+): ReadingDocument | undefined {
 	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
 	const runs: TextRun[] = []
 	let text = "",
@@ -78,8 +87,7 @@ function capture(root: Node, range: Range | null, excludeChrome: boolean): Readi
 		lastBlock = block
 		runs.push({ from: text.length, to: text.length + value.length, node, offset: from })
 		text += value
-		if (text.length > maximumReadingCharacters)
-			throw new Error("This page is too long to read in one session. Select a smaller section.")
+		if (text.length > maximumReadingCharacters) throw new Error(tooLong)
 	}
 	if (!text.trim()) return undefined
 	return normalizeDocument({ text, runs })
@@ -121,7 +129,7 @@ export function captureContinuation(point: ReadingPoint): ReadingDocument | unde
 		return undefined
 	}
 	// Continuation reads like article mode, so page chrome stays excluded.
-	return capture(root, range, true)
+	return capture(root, range, true, remainderTooLong)
 }
 
 export function sourceRange(source: ReadingDocument, start: number, end: number): Range | null {
