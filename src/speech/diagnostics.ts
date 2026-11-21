@@ -3,7 +3,14 @@ import catalog from "./voices.json"
 import { isElapsed, isRecord, isWorkerField, workerDurationFields, type WorkerTimings } from "./worker-timings.ts"
 
 /** Configured runtime values and elapsed times only; never source text or errors. */
-export type GpuFallbackReason = "gpu-initialization-failed" | "gpu-inference-failed"
+const gpuFallbackReasons = [
+	"gpu-initialization-failed",
+	"gpu-inference-failed",
+	"gpu-initialization-timeout",
+	"gpu-inference-timeout",
+	"cpu-first-clip",
+] as const
+export type GpuFallbackReason = (typeof gpuFallbackReasons)[number]
 
 export interface SpeechDiagnostics extends WorkerTimings {
 	backend?: "cpu" | "gpu"
@@ -37,13 +44,14 @@ export function speechDiagnostics(value: unknown): SpeechDiagnostics {
 	for (const field of [...workerDurationFields, ...engineDurations])
 		if (isElapsed(value[field])) result[field] = value[field]
 	if (isWorkerField("threads", value.threads)) result.threads = value.threads as number
+	if (isWorkerField("decoders", value.decoders)) result.decoders = value.decoders as number
 	if (typeof value.crossOriginIsolated === "boolean") result.crossOriginIsolated = value.crossOriginIsolated
 	if (value.backend === "cpu" || value.backend === "gpu") result.backend = value.backend
 	if (knownVoice(value.voice)) result.voice = value.voice
 	if (typeof value.reusedSession === "boolean") result.reusedSession = value.reusedSession
 	if (typeof value.modelReusedOnFallback === "boolean") result.modelReusedOnFallback = value.modelReusedOnFallback
-	if (value.gpuFallbackReason === "gpu-initialization-failed" || value.gpuFallbackReason === "gpu-inference-failed")
-		result.gpuFallbackReason = value.gpuFallbackReason
+	const fallback = gpuFallbackReasons.find((reason) => reason === value.gpuFallbackReason)
+	if (fallback) result.gpuFallbackReason = fallback
 	return result
 }
 

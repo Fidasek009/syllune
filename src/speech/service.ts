@@ -12,7 +12,7 @@ interface SpeechBackend {
 	dispose(): void
 }
 
-/** One model session per browser; audio and page ownership stay in the reading tab. */
+/** The browser shares one speech engine. The reading tab owns audio and the source page. */
 export class SpeechService {
 	private owner = ""
 	private generation = 0

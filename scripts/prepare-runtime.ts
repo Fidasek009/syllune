@@ -82,6 +82,27 @@ for (const [directory, backend, runtime] of [
 			out,
 		)
 }
+const decoder = await Bun.build({
+	entrypoints: [`${root}/src/speech/decoder-worker.ts`],
+	outdir: `${out}/cpu`,
+	naming: "decoder.js",
+	target: "browser",
+	format: "esm",
+	minify: { whitespace: true },
+	plugins: [
+		{
+			name: "vocoder-runtime",
+			setup(build) {
+				build.onResolve({ filter: /^onnxruntime-web$/ }, () => ({
+					path: `${root}/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`,
+				}))
+			},
+		},
+	],
+})
+if (!decoder.success) throw new AggregateError(decoder.logs, "Vocoder worker bundling failed")
+await Bun.write(`${out}/cpu/decoder.js`, adaptOrtImports(await Bun.file(`${out}/cpu/decoder.js`).text(), "wasm"))
+expected.get(out)!.add("cpu/decoder.js")
 const gpuModule = `${out}/ort/webgpu/ort-wasm-simd-threaded.asyncify.mjs`
 await Bun.write(gpuModule, adaptOrtBindings(await Bun.file(gpuModule).text()))
 const phonemizer = `${root}/node_modules/@spelling-creator/spellophone`

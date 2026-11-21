@@ -8,22 +8,26 @@ import { SpeechError } from "./errors.ts"
 import { instrumentInWorker } from "./instrument-client.ts"
 import { isVoiceChange } from "./protocol.ts"
 import { validateConfig, type VoiceConfig } from "./voice-config.ts"
-import { type StoredVoice, voiceLock, voiceOperation } from "./voice-store.ts"
+import { type StoredVoice, voiceLock, type VoiceModel, voiceOperation } from "./voice-store.ts"
 
 export async function installedVoices(): Promise<string[]> {
 	return (await voiceOperation("readonly", (store) => store.getAllKeys())).map(String)
 }
 
-export async function readVoice(id: string): Promise<{ model: ArrayBuffer; config: VoiceConfig }> {
+export async function readVoice(id: string): Promise<{ model: VoiceModel; config: VoiceConfig }> {
 	const voice = getVoice(id)
 	if (voice.unsupported) throw new SpeechError("voice", voice.unsupported)
 	const stored = await voiceOperation<StoredVoice | undefined>("readonly", (store) => store.get(id))
 	if (!stored || stored.sourceHash !== voice.sha256)
 		throw new SpeechError("voice", "Stored voice is missing or outdated")
 	try {
-		return { model: stored.model, config: validateConfig(stored.config) }
+		const config = validateConfig(stored.config)
+		const { model } = stored
+		if (!(model instanceof Blob ? model.size : model instanceof ArrayBuffer && model.byteLength))
+			throw new Error("Empty or invalid voice model")
+		return { model, config }
 	} catch {
-		throw new SpeechError("voice", "Stored voice configuration is invalid")
+		throw new SpeechError("voice", "Stored voice data is invalid")
 	}
 }
 
@@ -87,7 +91,7 @@ export async function downloadVoice(
 			)
 			abort.throwIfAborted()
 			await voiceOperation("readwrite", (store) =>
-				store.put({ id, sourceHash: digest, model, config } satisfies StoredVoice),
+				store.put({ id, sourceHash: digest, model: new Blob([model]), config } satisfies StoredVoice),
 			)
 			await committed()
 		})

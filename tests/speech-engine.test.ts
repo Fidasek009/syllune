@@ -16,6 +16,8 @@ function deferred<T>() {
 function fixture(
 	options: {
 		gpu?: boolean
+		gpuAvailable?: () => Promise<boolean>
+		gpuStartupTimeoutMs?: number
 		read?: SpeechEngineRuntime["readVoice"]
 		respond?: (request: WorkerRequest, backend: "cpu" | "gpu") => Promise<WorkerResponse> | WorkerResponse
 	} = {},
@@ -25,7 +27,7 @@ function fixture(
 	let reads = 0,
 		disabled = false
 	const runtime: SpeechEngineRuntime = {
-		gpuAvailable: async () => !!options.gpu && !disabled,
+		gpuAvailable: options.gpuAvailable ?? (async () => !!options.gpu && !disabled),
 		disableGpu: () => {
 			disabled = true
 		},
@@ -66,7 +68,7 @@ function fixture(
 		},
 	}
 	return {
-		engine: new SpeechEngine(runtime),
+		engine: new SpeechEngine(runtime, options.gpuStartupTimeoutMs),
 		runtime,
 		commands,
 		workers,
@@ -90,6 +92,8 @@ test("completed cancelled inference is cached without delivering stale audio", a
 	const f = fixture({
 		respond: (request) => {
 			if (request.type !== "synthesize") return { id: request.id, ok: true, type: "load", timings: {} }
+			if (request.text === "first")
+				return { id: request.id, ok: true, type: "synthesize", pcm: Float32Array.of(0.1), sampleRate: 22050, words: [] }
 			started.resolve(request)
 			return finished.promise
 		},
@@ -120,10 +124,20 @@ test("cancelled GPU failures do not start CPU fallback", async () => {
 		gpu: true,
 		respond: (request, backend) => {
 			if (request.type === "load") {
-				if (backend === "gpu") model = request.model
+				if (backend === "gpu" && request.model instanceof ArrayBuffer) model = request.model
 				return { id: request.id, ok: true, type: "load", timings: {} }
 			}
+			if (backend === "cpu" && request.text === "first") return deferred<WorkerResponse>().promise
 			if (backend === "cpu")
+				return {
+					id: request.id,
+					ok: true,
+					type: "synthesize",
+					pcm: Float32Array.of(0.1),
+					sampleRate: 22050,
+					words: [],
+				}
+			if (request.text === "first")
 				return {
 					id: request.id,
 					ok: true,
@@ -137,16 +151,17 @@ test("cancelled GPU failures do not start CPU fallback", async () => {
 		},
 	})
 	await f.engine.load("en_US-ljspeech-medium")
+	await f.engine.synthesize("first", 1)
 	const stale = f.engine.synthesize("hello", 1)
 	const request = await started.promise
 	f.engine.cancelQueued()
 	finished.resolve({ id: request.id, ok: false, error: "GPU failed", ...(model ? { model } : {}) })
 	await expect(stale).rejects.toMatchObject({ name: "AbortError" })
-	expect(f.workers.map(({ backend }) => backend)).toEqual(["gpu"])
+	expect(f.workers.map(({ backend }) => backend)).toEqual(["cpu", "gpu"])
 	expect(await f.runtime.gpuAvailable()).toBe(false)
 	// Only an explicit subsequent request initializes CPU, reusing the bytes.
 	await f.engine.synthesize("hello again", 1)
-	expect(f.workers.map(({ backend }) => backend)).toEqual(["gpu", "cpu"])
+	expect(f.workers.map(({ backend }) => backend)).toEqual(["cpu", "gpu", "cpu"])
 	expect(f.reads).toBe(1)
 	f.engine.dispose()
 })
@@ -157,16 +172,18 @@ test("GPU inference failure transfers the original model into CPU fallback and d
 		gpu: true,
 		respond: (request, backend) => {
 			if (request.type === "load") {
-				if (backend === "gpu") model = request.model
-				else expect(request.model.byteLength).toBe(8)
+				if (backend === "gpu" && request.model instanceof ArrayBuffer) model = request.model
+				else expect(request.model).toBeInstanceOf(ArrayBuffer)
 				return { id: request.id, ok: true, type: "load", timings: {} }
 			}
-			return backend === "gpu"
+			if (backend === "cpu" && request.text === "first") return deferred<WorkerResponse>().promise
+			return backend === "gpu" && request.text !== "first"
 				? { id: request.id, ok: false, error: "GPU failed", ...(model ? { model } : {}) }
 				: { id: request.id, ok: true, type: "synthesize", pcm: Float32Array.of(0.1), sampleRate: 22050, words: [] }
 		},
 	})
 	await f.engine.load("en_US-ljspeech-medium")
+	await f.engine.synthesize("first", 1)
 	await f.engine.synthesize("hello", 1)
 	expect(f.reads).toBe(1)
 	expect(f.engine.diagnostics).toMatchObject({
@@ -176,7 +193,7 @@ test("GPU inference failure transfers the original model into CPU fallback and d
 	})
 	f.engine.dispose()
 	await f.engine.load("en_US-ljspeech-medium")
-	expect(f.workers.map(({ backend }) => backend)).toEqual(["gpu", "cpu", "cpu"])
+	expect(f.workers.map(({ backend }) => backend)).toEqual(["cpu", "gpu", "cpu", "cpu"])
 	f.engine.dispose()
 })
 
@@ -223,5 +240,164 @@ test("changing reader ownership during a shared model load preserves the pending
 	expect(f.workers).toHaveLength(1)
 	expect(f.engine.diagnostics.voice).toBe("en_US-ljspeech-medium")
 	await expect(f.engine.synthesize("New reader's text", 1)).resolves.toMatchObject({ sampleRate: 22050 })
+	f.engine.dispose()
+})
+
+for (const stage of ["load", "synthesize"] as const) {
+	test(`a stalled GPU ${stage} cannot delay the CPU first clip`, async () => {
+		const f = fixture({
+			gpu: true,
+			gpuStartupTimeoutMs: 5_000,
+			respond(request, backend) {
+				if (backend === "gpu" && request.type === stage) return deferred<WorkerResponse>().promise
+				if (request.type === "load") return { id: request.id, ok: true, type: "load", timings: {} }
+				return {
+					id: request.id,
+					ok: true,
+					type: "synthesize",
+					pcm: Float32Array.of(0.1),
+					sampleRate: 22050,
+					words: [],
+				}
+			},
+		})
+		await f.engine.load("en_GB-cori-high")
+		const clip = await f.engine.synthesize("Hello", 1)
+		expect(clip.pcm).toEqual(Float32Array.of(0.1))
+		expect(f.engine.diagnostics).toMatchObject({
+			backend: "cpu",
+			gpuFallbackReason: "cpu-first-clip",
+		})
+		expect(f.workers).toEqual([
+			{ backend: "cpu", terminated: false },
+			{ backend: "gpu", terminated: true },
+		])
+		expect(f.reads).toBe(1)
+		f.engine.dispose()
+	})
+}
+
+test("CPU playback proceeds while GPU availability is unresolved", async () => {
+	const availability = deferred<boolean>()
+	const f = fixture({ gpuAvailable: () => availability.promise })
+	await f.engine.load("en_GB-cori-high")
+	await f.engine.synthesize("Hello", 1)
+	availability.resolve(true)
+	await Promise.resolve()
+	expect(f.workers).toEqual([{ backend: "cpu", terminated: false }])
+	expect(f.reads).toBe(1)
+	f.engine.dispose()
+})
+
+test("a Blob model can start GPU preparation after CPU preparation starts", async () => {
+	const availability = deferred<boolean>()
+	const cpuLoad = deferred<void>()
+	let firstCpuLoad = true
+	const f = fixture({
+		gpuAvailable: () => availability.promise,
+		read: async () => ({ model: new Blob([new Uint8Array([1, 2, 3])]), config }),
+		async respond(request, backend) {
+			if (request.type === "load") {
+				if (!(request.model instanceof Blob)) throw new Error("Expected a cloned Blob")
+				expect([...new Uint8Array(await request.model.arrayBuffer())]).toEqual([1, 2, 3])
+				if (backend === "cpu" && firstCpuLoad) {
+					firstCpuLoad = false
+					cpuLoad.resolve()
+					return deferred<WorkerResponse>().promise
+				}
+				return { id: request.id, ok: true, type: "load", timings: {} }
+			}
+			if (backend === "gpu" && request.text === "Second clip") return { id: request.id, ok: false, error: "GPU failed" }
+			return {
+				id: request.id,
+				ok: true,
+				type: "synthesize",
+				pcm: Float32Array.of(0.1),
+				sampleRate: 22050,
+				words: [],
+			}
+		},
+	})
+	const loaded = f.engine.load("en_GB-cori-high")
+	await cpuLoad.promise
+	availability.resolve(true)
+	await loaded
+	await f.engine.synthesize("First clip", 1)
+	expect(f.engine.diagnostics.backend).toBe("gpu")
+	expect(f.workers).toEqual([
+		{ backend: "cpu", terminated: true },
+		{ backend: "gpu", terminated: false },
+	])
+	await f.engine.synthesize("Second clip", 1)
+	expect(f.engine.diagnostics).toMatchObject({
+		backend: "cpu",
+		modelReusedOnFallback: true,
+		gpuFallbackReason: "gpu-inference-failed",
+	})
+	expect(f.reads).toBe(1)
+	f.engine.dispose()
+})
+
+test("a voice change closes both workers competing for stale speech", async () => {
+	const started = deferred<void>()
+	let requests = 0
+	const f = fixture({
+		gpu: true,
+		respond(request) {
+			if (request.type === "load") return { id: request.id, ok: true, type: "load", timings: {} }
+			if (request.text === "Old selection") {
+				if (++requests === 2) started.resolve()
+				return deferred<WorkerResponse>().promise
+			}
+			return {
+				id: request.id,
+				ok: true,
+				type: "synthesize",
+				pcm: Float32Array.of(0.2),
+				sampleRate: 22050,
+				words: [],
+			}
+		},
+	})
+	await f.engine.load("en_GB-cori-high")
+	const stale = f.engine.synthesize("Old selection", 1)
+	const result = stale.catch((error: unknown) => error)
+	await started.promise
+	await f.engine.load("cs_CZ-jirka-medium")
+	const fresh = await f.engine.synthesize("Nový výběr", 1)
+	expect(await result).toMatchObject({ name: "AbortError" })
+	expect(fresh.pcm).toEqual(Float32Array.of(0.2))
+	expect(f.workers.slice(0, 2).every(({ terminated }) => terminated)).toBe(true)
+	expect(f.engine.diagnostics.voice).toBe("cs_CZ-jirka-medium")
+	f.engine.dispose()
+})
+
+test("GPU synthesis after startup uses the normal request deadline", async () => {
+	const gpuStartupTimeoutMs = 10
+	const f = fixture({
+		gpu: true,
+		gpuStartupTimeoutMs,
+		async respond(request, backend) {
+			if (request.type === "load") return { id: request.id, ok: true, type: "load", timings: {} }
+			if (backend === "cpu") return deferred<WorkerResponse>().promise
+			if (request.text === "A longer passage") await Bun.sleep(gpuStartupTimeoutMs * 2)
+			return {
+				id: request.id,
+				ok: true,
+				type: "synthesize",
+				pcm: Float32Array.of(0.1),
+				sampleRate: 22050,
+				words: [],
+			}
+		},
+	})
+	await f.engine.load("en_GB-cori-high")
+	await f.engine.synthesize("Hello", 1)
+	await f.engine.synthesize("A longer passage", 1)
+	expect(f.engine.diagnostics.backend).toBe("gpu")
+	expect(f.workers).toEqual([
+		{ backend: "cpu", terminated: true },
+		{ backend: "gpu", terminated: false },
+	])
 	f.engine.dispose()
 })

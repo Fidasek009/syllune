@@ -3,8 +3,9 @@ import { browser } from "wxt/browser"
 import type { GpuFallbackReason, SpeechDiagnostics } from "./diagnostics.ts"
 import type { SpeechClip } from "./protocol.ts"
 import type { VoiceConfig } from "./voice-config.ts"
+import type { VoiceModel } from "./voice-store.ts"
 
-import { SPEECH_REQUEST_TIMEOUT_MS, speechFailure, SpeechTextError } from "./errors.ts"
+import { SPEECH_REQUEST_TIMEOUT_MS, speechFailure, speechFailureCode, SpeechTextError } from "./errors.ts"
 import { sendSpeechHost, SPEECH_GPU_FAILURE_KEY } from "./host-protocol.ts"
 import { readVoice } from "./vault.ts"
 import { isWorkerResponse, type WorkerCommand, type WorkerRequest, type WorkerSuccess } from "./worker-protocol.ts"
@@ -23,7 +24,9 @@ export interface SpeechEngineRuntime {
 	disableGpu(): void
 }
 
-type RecoveredModel = { model: ArrayBuffer; config: VoiceConfig; modelReadMs: number }
+type VoiceData = { model: VoiceModel; config: VoiceConfig; modelReadMs: number }
+
+const GPU_STARTUP_TIMEOUT_MS = 3_000
 
 let gpuUnavailable = false
 const defaultRuntime: SpeechEngineRuntime = {
@@ -53,43 +56,110 @@ class WorkerFailure extends Error {
 	}
 }
 
-class WorkerLoadFailure extends WorkerFailure {
-	constructor(
-		error: WorkerFailure,
-		readonly config: VoiceConfig,
-		readonly modelReadMs: number,
-	) {
-		super(error.message, error.model)
+class SpeechSession {
+	diagnostics: SpeechDiagnostics = {}
+	private rejectPending: ((error: Error) => void) | undefined
+	get closed() {
+		return this.closedWith !== undefined
 	}
+	private closedWith: Error | undefined
+	private sequence = 0
+
+	constructor(
+		private worker: SpeechWorker,
+		readonly backend: "cpu" | "gpu",
+	) {
+		worker.onerror = () => this.close(new Error("The speech worker stopped unexpectedly"))
+	}
+
+	async request(
+		message: Extract<WorkerCommand, { type: "load" }>,
+		timeout?: number,
+	): Promise<Extract<WorkerSuccess, { type: "load" }>>
+	async request(
+		message: Extract<WorkerCommand, { type: "synthesize" }>,
+		timeout?: number,
+	): Promise<Extract<WorkerSuccess, { type: "synthesize" }>>
+	async request(message: WorkerCommand, timeout = SPEECH_REQUEST_TIMEOUT_MS): Promise<WorkerSuccess> {
+		if (this.closedWith) throw this.closedWith
+		if (this.rejectPending) throw new Error("Speech worker is busy")
+		const id = ++this.sequence
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => this.close(speechFailure("timeout")), timeout)
+			const finish = () => {
+				clearTimeout(timer)
+				this.rejectPending = undefined
+				this.worker.onmessage = null
+			}
+			const fail = (error: Error) => {
+				finish()
+				reject(error)
+			}
+			this.rejectPending = fail
+			this.worker.onmessage = ({ data }: MessageEvent<unknown>) => {
+				if (!data || typeof data !== "object" || !("id" in data) || data.id !== id) return
+				if (!isWorkerResponse(data) || (data.ok && data.type !== message.type)) {
+					fail(new Error("Invalid speech response"))
+					return
+				}
+				if (!data.ok) {
+					fail(
+						data.code === "unreadable-text"
+							? new SpeechTextError(data.error)
+							: new WorkerFailure(data.error, data.model),
+					)
+					return
+				}
+				finish()
+				resolve(data)
+			}
+			try {
+				this.worker.postMessage(
+					{ ...message, id } satisfies WorkerRequest,
+					message.type === "load" && message.model instanceof ArrayBuffer ? [message.model] : [],
+				)
+			} catch (error) {
+				finish()
+				reject(error)
+			}
+		})
+	}
+
+	close(error: Error = speechFailure("cancelled")) {
+		if (this.closed) return
+		this.closedWith = error
+		this.worker.terminate()
+		this.rejectPending?.(error)
+	}
+}
+
+type Candidate = {
+	session: SpeechSession
+	ready: Promise<SpeechSession>
 }
 
 export class SpeechEngine {
 	diagnostics: SpeechDiagnostics = {}
-	private worker: SpeechWorker | undefined
+	private primary: SpeechSession | undefined
+	private candidates: Candidate[] = []
 	private loadedConfig: VoiceConfig | undefined
+	private loadedBlob: Blob | undefined
 	private modelReadMs = 0
-	private cpuFallback: { recovered: RecoveredModel | undefined } | undefined
+	private cpuFallback: { recovered: VoiceData | undefined; reason: GpuFallbackReason } | undefined
+	private recovering: Promise<SpeechSession> | undefined
 	private voice = ""
-	private backend: "cpu" | "gpu" = "cpu"
 	private epoch = 0
-	private sequence = 0
 	private serial: Promise<unknown> = Promise.resolve()
 	private generation = 0
 	private cacheEpoch = 0
 	private clips = new Map<string, SpeechClip>()
 	private clipBytes = 0
 	private loading: { voice: string; promise: Promise<void> } | undefined
-	private pending = new Map<
-		number,
-		{
-			type: WorkerRequest["type"]
-			resolve: (value: WorkerSuccess) => void
-			reject: (error: Error) => void
-			timer: ReturnType<typeof setTimeout>
-		}
-	>()
 
-	constructor(private runtime: SpeechEngineRuntime = defaultRuntime) {}
+	constructor(
+		private runtime: SpeechEngineRuntime = defaultRuntime,
+		private gpuStartupTimeoutMs = GPU_STARTUP_TIMEOUT_MS,
+	) {}
 
 	load(voice: string): Promise<void> {
 		if (this.loading?.voice === voice) return this.loading.promise
@@ -105,88 +175,111 @@ export class SpeechEngine {
 
 	private async loadVoice(voice: string): Promise<void> {
 		const sameVoice = this.voice === voice
-		if (sameVoice && this.worker && !this.cpuFallback) {
-			// A reused session did not incur the previous initialization costs.
-			this.voice = voice
-			this.diagnostics = { backend: this.backend, voice, reusedSession: true }
+		if (sameVoice && this.cpuFallback) {
+			await this.recoverCpu(this.epoch, performance.now())
 			return
 		}
-		let recovered = sameVoice ? this.cpuFallback?.recovered : undefined
+		if (
+			sameVoice &&
+			((this.primary && !this.primary.closed) || this.candidates.some(({ session }) => !session.closed))
+		) {
+			if (this.primary) this.diagnostics = { backend: this.primary.backend, voice, reusedSession: true }
+			return
+		}
 		this.dispose()
-		const loadStarted = performance.now()
+		const started = performance.now()
 		const epoch = this.epoch
-		const backends: ("gpu" | "cpu")[] = (await this.runtime.gpuAvailable()) ? ["gpu", "cpu"] : ["cpu"]
-		if (epoch !== this.epoch) throw speechFailure("cancelled")
-		let fallback: GpuFallbackReason | undefined
-		for (const backend of backends) {
-			try {
-				await this.initialize(voice, backend, epoch, recovered)
-				this.diagnostics.loadMs = performance.now() - loadStarted
-				if (fallback) this.diagnostics.gpuFallbackReason = fallback
-				return
-			} catch (error) {
-				if (epoch !== this.epoch) throw speechFailure("cancelled")
-				this.stopWorker()
-				if (backend === "cpu") throw error
-				this.runtime.disableGpu()
-				fallback = "gpu-initialization-failed"
-				if (error instanceof WorkerLoadFailure && error.model)
-					recovered = { model: error.model, config: error.config, modelReadMs: error.modelReadMs }
+		const cpu = new SpeechSession(this.runtime.createWorker("cpu"), "cpu")
+		this.primary = cpu
+		let gpuAvailable = false
+		const availability = this.runtime.gpuAvailable().then(
+			(available) => (gpuAvailable = available),
+			() => false,
+		)
+		try {
+			const { model, config } = await this.runtime.readVoice(voice)
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.loadedConfig = config
+			this.loadedBlob = model instanceof Blob ? model : undefined
+			this.modelReadMs = performance.now() - started
+			const data = { model, config, modelReadMs: this.modelReadMs }
+
+			const startGpu = (): Candidate | undefined => {
+				try {
+					const gpuModel = model instanceof ArrayBuffer ? model.slice(0) : model
+					const session = new SpeechSession(this.runtime.createWorker("gpu"), "gpu")
+					return { session, ready: this.prepare(session, voice, { ...data, model: gpuModel }, started) }
+				} catch {
+					this.runtime.disableGpu()
+				}
 			}
+			// Copy legacy buffers before sending them to the CPU. An immutable Blob
+			// remains available if GPU discovery finishes during CPU preparation.
+			const gpu = gpuAvailable ? startGpu() : undefined
+			const cpuReady = this.prepare(cpu, voice, data, started)
+			this.primary = undefined
+			this.candidates = [{ session: cpu, ready: cpuReady }]
+			const pending = [cpuReady]
+			if (gpu) {
+				this.candidates.push(gpu)
+				pending.push(gpu.ready)
+			} else if (model instanceof Blob && !gpuAvailable) {
+				const cpuFinished = cpuReady.then(
+					() => false,
+					() => false,
+				)
+				pending.push(
+					Promise.race([availability, cpuFinished]).then((available) => {
+						const candidate = available && epoch === this.epoch && !this.primary && startGpu()
+						if (!candidate) throw speechFailure("cancelled")
+						this.candidates.push(candidate)
+						return candidate.ready
+					}),
+				)
+			}
+			const ready = await Promise.any(pending)
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.voice = voice
+			if (this.candidates.length === 1) this.select(cpu)
+			else this.diagnostics = { ...ready.diagnostics }
+		} catch (error) {
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.dispose()
+			if (error instanceof AggregateError && error.errors.length) throw error.errors[0]
+			throw error
 		}
 	}
 
-	private async initialize(voice: string, backend: "cpu" | "gpu", epoch: number, recovered?: RecoveredModel) {
-		const started = performance.now()
-		// Parsing the worker and loading its runtime imports overlaps the IDB read.
-		const worker = this.runtime.createWorker(backend)
-		this.worker = worker
-		worker.onmessage = ({ data }: MessageEvent<unknown>) => {
-			if (!data || typeof data !== "object" || !("id" in data) || typeof data.id !== "number") return
-			const pending = this.pending.get(data.id)
-			if (!pending) return
-			clearTimeout(pending.timer)
-			this.pending.delete(data.id)
-			if (!isWorkerResponse(data) || (data.ok && data.type !== pending.type))
-				pending.reject(new Error("Invalid speech response"))
-			else if (data.ok) pending.resolve(data)
-			else
-				pending.reject(
-					data.code === "unreadable-text" ? new SpeechTextError(data.error) : new WorkerFailure(data.error, data.model),
-				)
-		}
-		worker.onerror = () => {
-			if (this.worker === worker) this.stopWorker(new Error("The speech worker stopped unexpectedly"))
-		}
-		const { model, config } = recovered ?? (await this.runtime.readVoice(voice))
-		const modelReadMs = recovered ? recovered.modelReadMs : performance.now() - started
-		if (epoch !== this.epoch) throw speechFailure("cancelled")
-		this.backend = backend
-		let loaded: Extract<WorkerSuccess, { type: "load" }>
+	private async prepare(
+		session: SpeechSession,
+		voice: string,
+		{ model, config, modelReadMs }: VoiceData,
+		started: number,
+	): Promise<SpeechSession> {
 		try {
-			loaded = await this.request({ type: "load", voice, config, model }, [model])
+			const loaded = await session.request(
+				{ type: "load", voice, config, model },
+				session.backend === "gpu" ? this.gpuStartupTimeoutMs : undefined,
+			)
+			session.diagnostics = {
+				backend: session.backend,
+				voice,
+				modelReadMs,
+				loadMs: performance.now() - started,
+				...loaded.timings,
+			}
+			return session
 		} catch (error) {
-			if (error instanceof WorkerFailure && error.model) throw new WorkerLoadFailure(error, config, modelReadMs)
-			if (model.byteLength)
-				throw new WorkerLoadFailure(
-					new WorkerFailure(error instanceof Error ? error.message : "Speech worker failed", model),
-					config,
-					modelReadMs,
-				)
+			session.close()
 			throw error
 		}
-		if (epoch !== this.epoch) throw speechFailure("cancelled")
-		this.loadedConfig = config
-		this.modelReadMs = modelReadMs
-		this.diagnostics = {
-			backend,
-			voice,
-			modelReadMs,
-			loadMs: performance.now() - started,
-			...(recovered ? { modelReusedOnFallback: true } : {}),
-			...loaded.timings,
-		}
-		this.voice = voice
+	}
+
+	private select(session: SpeechSession) {
+		for (const candidate of this.candidates) if (candidate.session !== session) candidate.session.close()
+		this.candidates = []
+		this.primary = session
+		this.diagnostics = { ...session.diagnostics }
 	}
 
 	synthesize(text: string, speed: number): Promise<SpeechClip> {
@@ -224,43 +317,110 @@ export class SpeechEngine {
 	private async generate(text: string, speed: number, generation: number): Promise<SpeechClip> {
 		const epoch = this.epoch
 		const started = performance.now()
-		let value: Extract<WorkerSuccess, { type: "synthesize" }>
-		try {
-			if (this.cpuFallback) {
-				const recovered = this.cpuFallback.recovered
-				this.stopWorker()
-				await this.initialize(this.voice, "cpu", epoch, recovered)
-				this.cpuFallback = undefined
+		const message = { type: "synthesize", text, speed } as const
+		if (this.cpuFallback) await this.recoverCpu(epoch, started)
+		if (epoch !== this.epoch || generation !== this.generation) throw speechFailure("cancelled")
+		if (!this.primary) {
+			const candidates = this.candidates
+			const gpu = candidates.find(({ session }) => session.backend === "gpu")
+			let gpuFailure: GpuFallbackReason | undefined
+			let result
+			try {
+				result = await Promise.any(
+					candidates.map(async ({ ready, session }) => {
+						let loaded = false
+						try {
+							await ready
+							if (epoch !== this.epoch || generation !== this.generation) throw speechFailure("cancelled")
+							loaded = true
+							const synthesisStarted = performance.now()
+							const value = await session.request(
+								message,
+								session.backend === "gpu" ? this.gpuStartupTimeoutMs : undefined,
+							)
+							return { session, value, synthesisMs: performance.now() - synthesisStarted }
+						} catch (error) {
+							const code = speechFailureCode(error)
+							if (code !== "cancelled" && code !== "text") session.close()
+							if (session.backend === "gpu" && code !== "cancelled" && code !== "text") {
+								this.runtime.disableGpu()
+								gpuFailure = `gpu-${loaded ? "inference" : "initialization"}-${code === "timeout" ? "timeout" : "failed"}`
+							}
+							throw error
+						}
+					}),
+				)
+			} catch (error) {
 				if (epoch !== this.epoch || generation !== this.generation) throw speechFailure("cancelled")
-				this.diagnostics.gpuFallbackReason = "gpu-inference-failed"
-			}
-			value = await this.request({ type: "synthesize", text, speed })
-		} catch (error) {
-			if (epoch !== this.epoch) throw speechFailure("cancelled")
-			if (this.backend === "cpu" || error instanceof SpeechTextError) {
-				if (generation !== this.generation) throw speechFailure("cancelled")
+				if (error instanceof AggregateError && error.errors.length) throw error.errors[0]
 				throw error
 			}
-			const voice = this.voice
-			const recovered =
-				error instanceof WorkerFailure && error.model && this.loadedConfig
-					? { model: error.model, config: this.loadedConfig, modelReadMs: this.modelReadMs }
-					: undefined
-			this.runtime.disableGpu()
-			this.cpuFallback = { recovered }
-			// A cancelled failed GPU job remembers the broken backend and model,
-			// but only a subsequent live request may pay for CPU initialization.
-			if (generation !== this.generation) throw speechFailure("cancelled")
-			this.stopWorker()
-			await this.initialize(voice, "cpu", epoch, recovered)
-			this.cpuFallback = undefined
-			if (epoch !== this.epoch || generation !== this.generation) throw speechFailure("cancelled")
-			this.diagnostics.gpuFallbackReason = "gpu-inference-failed"
-			value = await this.request({ type: "synthesize", text, speed })
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.select(result.session)
+			if (result.session.backend === "cpu" && gpu) this.diagnostics.gpuFallbackReason = gpuFailure ?? "cpu-first-clip"
+			this.diagnostics.synthesisMs = result.synthesisMs
+			return result.value
 		}
-		if (epoch !== this.epoch) throw speechFailure("cancelled")
-		this.diagnostics.synthesisMs = performance.now() - started
-		return value
+		const session = this.primary
+		try {
+			const value = await session.request(message)
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.diagnostics.synthesisMs = performance.now() - started
+			return value
+		} catch (error) {
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			if (session.backend === "cpu" || error instanceof SpeechTextError) throw error
+			session.close()
+			const model = this.loadedBlob ?? (error instanceof WorkerFailure ? error.model : undefined)
+			const recovered =
+				model && this.loadedConfig ? { model, config: this.loadedConfig, modelReadMs: this.modelReadMs } : undefined
+			this.runtime.disableGpu()
+			const reason = speechFailureCode(error) === "timeout" ? "gpu-inference-timeout" : "gpu-inference-failed"
+			this.cpuFallback = { recovered, reason }
+			if (generation !== this.generation) throw speechFailure("cancelled")
+			const cpu = await this.recoverCpu(epoch, started)
+			if (generation !== this.generation) throw speechFailure("cancelled")
+			const value = await cpu.request(message)
+			if (epoch !== this.epoch) throw speechFailure("cancelled")
+			this.diagnostics.synthesisMs = performance.now() - started
+			return value
+		}
+	}
+
+	private async recoverCpu(epoch: number, started: number): Promise<SpeechSession> {
+		if (this.recovering) return this.recovering
+		const fallback = this.cpuFallback
+		if (!fallback) throw speechFailure("unavailable")
+		const voice = this.voice
+		const cpu = new SpeechSession(this.runtime.createWorker("cpu"), "cpu")
+		this.primary?.close()
+		this.primary = cpu
+		const model = fallback.recovered
+			? Promise.resolve(fallback.recovered)
+			: this.runtime.readVoice(voice).then((data) => ({
+					...data,
+					modelReadMs: performance.now() - started,
+				}))
+		this.cpuFallback = { recovered: undefined, reason: fallback.reason }
+		const recovering = model
+			.then((data) => this.prepare(cpu, voice, data, started))
+			.then(() => {
+				if (epoch !== this.epoch) throw speechFailure("cancelled")
+				this.cpuFallback = undefined
+				this.select(cpu)
+				this.diagnostics.gpuFallbackReason = fallback.reason
+				if (fallback.recovered) this.diagnostics.modelReusedOnFallback = true
+				return cpu
+			})
+		this.recovering = recovering
+		try {
+			return await recovering
+		} catch (error) {
+			cpu.close()
+			throw error
+		} finally {
+			if (this.recovering === recovering) this.recovering = undefined
+		}
 	}
 
 	cancelQueued() {
@@ -275,48 +435,21 @@ export class SpeechEngine {
 		this.clipBytes = 0
 	}
 
-	private request(
-		message: Extract<WorkerCommand, { type: "load" }>,
-		transfer?: Transferable[],
-	): Promise<Extract<WorkerSuccess, { type: "load" }>>
-	private request(
-		message: Extract<WorkerCommand, { type: "synthesize" }>,
-		transfer?: Transferable[],
-	): Promise<Extract<WorkerSuccess, { type: "synthesize" }>>
-	private request(message: WorkerCommand, transfer: Transferable[] = []): Promise<WorkerSuccess> {
-		return new Promise((resolve, reject) => {
-			if (!this.worker) return reject(new Error("Choose a downloaded voice first"))
-			const id = ++this.sequence
-			const timer = setTimeout(() => this.stopWorker(speechFailure("timeout")), SPEECH_REQUEST_TIMEOUT_MS)
-			this.pending.set(id, { type: message.type, resolve, reject, timer })
-			try {
-				this.worker.postMessage({ ...message, id } satisfies WorkerRequest, transfer)
-			} catch (error) {
-				clearTimeout(timer)
-				this.pending.delete(id)
-				reject(error)
-			}
-		})
-	}
-
-	private stopWorker(error: Error = speechFailure("cancelled")) {
-		this.worker?.terminate()
-		this.worker = undefined
-		for (const pending of this.pending.values()) {
-			clearTimeout(pending.timer)
-			pending.reject(error)
-		}
-		this.pending.clear()
-	}
-
 	dispose() {
 		this.loading = undefined
+		this.diagnostics = {}
 		this.epoch++
 		this.cacheEpoch++
 		this.voice = ""
+		this.serial = Promise.resolve()
 		this.loadedConfig = undefined
+		this.loadedBlob = undefined
 		this.cpuFallback = undefined
-		this.stopWorker()
+		this.recovering = undefined
+		this.primary?.close()
+		this.primary = undefined
+		for (const candidate of this.candidates) candidate.session.close()
+		this.candidates = []
 		this.generation++
 		this.clips.clear()
 		this.clipBytes = 0
