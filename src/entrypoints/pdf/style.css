@@ -130,6 +130,24 @@ button:focus-visible {
 .textLayer ::selection {
 	background: var(--selection);
 }
+.pdf-links {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	pointer-events: none;
+}
+.pdf-link {
+	position: absolute;
+	border-radius: 2px;
+	pointer-events: auto;
+}
+.pdf-link:hover {
+	background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.pdf-link:focus-visible {
+	outline: 3px solid var(--focus);
+	outline-offset: 1px;
+}
 @media (forced-colors: active) {
 	.textLayer ::selection {
 		background: Highlight;

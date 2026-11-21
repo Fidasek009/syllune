@@ -17,6 +17,7 @@ import { sourceChangedMessage } from "../../reading/messages.ts"
 import { normalizeDocument } from "../../reading/normalize.ts"
 import { fetchPdf } from "../../reading/pdf-access.ts"
 import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
+import { destinationTop, externalLinkTarget, isPdfLinkAnnotation, linkRects } from "../../reading/pdf-links.ts"
 import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
 import { selectRange, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
@@ -62,6 +63,7 @@ interface PageState {
 	canvas: HTMLCanvasElement
 	section: HTMLElement
 	container: HTMLDivElement
+	links: HTMLDivElement
 	viewport: ReturnType<PDFPageProxy["getViewport"]>
 	fitScale: number
 	content?: PageTextContent
@@ -70,6 +72,7 @@ interface PageState {
 	runs: (PdfTextRun | undefined)[]
 	document?: ReadingDocument
 	textReady?: Promise<void>
+	linksReady?: Promise<void>
 	task?: RenderTask
 	visible: boolean
 	pending: Promise<void>
@@ -127,7 +130,9 @@ async function createPage(number: number): Promise<PageState> {
 	canvas.setAttribute("aria-hidden", "true")
 	const container = document.createElement("div")
 	container.className = "textLayer"
-	section.append(canvas, container)
+	const links = document.createElement("div")
+	links.className = "pdf-links"
+	section.append(canvas, container, links)
 	pages.append(section)
 	if (number === 1) zoomControls.hidden = false
 	const state: PageState = {
@@ -136,6 +141,7 @@ async function createPage(number: number): Promise<PageState> {
 		canvas,
 		section,
 		container,
+		links,
 		viewport,
 		fitScale,
 		text: "",
@@ -203,6 +209,100 @@ function ensureText(state: PageState): Promise<void> {
 		delete state.textReady
 		throw error
 	}))
+}
+
+let linkFailureShown = false
+
+function linksUnavailable() {
+	if (!alive || linkFailureShown) return
+	linkFailureShown = true
+	status.textContent = "Some PDF links could not be shown."
+}
+
+/** Annotations load lazily: only pages near the viewport need their links. */
+function ensureLinks(state: PageState): Promise<void> {
+	return (state.linksReady ??= (async () => {
+		const annotations = await state.page.getAnnotations()
+		if (!alive) return
+		const fragment = document.createDocumentFragment()
+		for (const data of annotations) {
+			if (!isPdfLinkAnnotation(data)) continue
+			const overlay = typeof data.overlaidText === "string" ? data.overlaidText : ""
+			let accessible = true
+			for (const rect of linkRects(data)) {
+				const [x1, y1] = state.viewport.convertToViewportPoint(rect[0], rect[1])
+				const [x2, y2] = state.viewport.convertToViewportPoint(rect[2], rect[3])
+				const width = Math.abs(x2 - x1)
+				const height = Math.abs(y2 - y1)
+				if (width < 1 || height < 1) continue
+				const link = document.createElement("a")
+				link.className = "pdf-link"
+				link.style.left = `${(Math.min(x1, x2) / state.viewport.width) * 100}%`
+				link.style.top = `${(Math.min(y1, y2) / state.viewport.height) * 100}%`
+				link.style.width = `${(width / state.viewport.width) * 100}%`
+				link.style.height = `${(height / state.viewport.height) * 100}%`
+				if (data.url) {
+					const target = externalLinkTarget(data.url)
+					if (!target) continue
+					link.href = target.href
+					link.target = "_blank"
+					link.rel = "noopener noreferrer"
+					link.title = target.href
+					link.setAttribute("aria-label", `Open ${overlay || target.href}`)
+				} else {
+					link.href = "#"
+					link.title = overlay || "Go to the linked page"
+					link.setAttribute("aria-label", overlay ? `Go to the linked page: ${overlay}` : "Go to the linked page")
+					link.addEventListener("click", (event) => {
+						event.preventDefault()
+						void goToDestination(data.dest).catch(fail)
+					})
+				}
+				// Extra quadrilaterals share one logical link, so only the first joins the tab order.
+				if (accessible) accessible = false
+				else {
+					link.tabIndex = -1
+					link.setAttribute("aria-hidden", "true")
+				}
+				fragment.append(link)
+			}
+		}
+		state.links.replaceChildren(fragment)
+	})().catch(linksUnavailable))
+}
+
+type PageRef = Parameters<PDFDocumentProxy["getPageIndex"]>[0]
+
+function isPageRef(value: unknown): value is PageRef {
+	if (typeof value !== "object" || value === null) return false
+	const ref = value as { num?: unknown; gen?: unknown }
+	return typeof ref.num === "number" && typeof ref.gen === "number"
+}
+
+/** Clears the fixed header when a link jumps to a destination. */
+const PAGE_TOP_INSET = 72
+let navigation = 0
+
+async function goToDestination(dest: unknown) {
+	if (typeof dest !== "string" && !Array.isArray(dest)) return
+	const current = ++navigation
+	const pdf = await documentReady.promise
+	const target = typeof dest === "string" ? await pdf.getDestination(dest) : dest
+	if (!Array.isArray(target) || current !== navigation) return
+	const ref = target[0]
+	let pageNumber: number | undefined
+	if (isPageRef(ref)) {
+		pageNumber = pdf.cachedPageNumber(ref) ?? (await pdf.getPageIndex(ref)) + 1
+	} else if (typeof ref === "number" && Number.isInteger(ref)) {
+		pageNumber = ref + 1
+	}
+	if (!pageNumber || pageNumber < 1 || pageNumber > pdf.numPages) return
+	const page = await pageThrough(pageNumber)
+	if (current !== navigation || !alive) return
+	const top = destinationTop(target)
+	const offset = top === undefined ? 0 : page.viewport.convertToViewportPoint(0, top)[1]
+	const pageTop = page.section.getBoundingClientRect().top + scrollY
+	scrollTo({ top: Math.max(0, pageTop + offset - PAGE_TOP_INSET), behavior: "instant" })
 }
 
 function pageDocuments(from: number, to: number): ReadingDocument {
@@ -554,6 +654,7 @@ const observer = new IntersectionObserver(
 			if (!item) continue
 			item.visible = entry.isIntersecting
 			if (!entry.isIntersecting) item.task?.cancel()
+			else void ensureLinks(item)
 			queuePaint(item)
 		}
 	},
@@ -765,6 +866,7 @@ async function load() {
 	const base = new URL("pdf-runtime/", location.href)
 	const task = getDocument({
 		data: bytes,
+		docBaseUrl: url.href,
 		cMapUrl: new URL("cmaps/", base).href,
 		cMapPacked: true,
 		standardFontDataUrl: new URL("standard_fonts/", base).href,
