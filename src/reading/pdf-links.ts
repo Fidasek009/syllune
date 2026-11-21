@@ -1,6 +1,10 @@
+export type PdfRect = readonly [number, number, number, number]
+
 /** A PDF.js link annotation reduced to the fields the reader acts on. */
 export interface PdfLinkAnnotation {
-	rect: readonly [number, number, number, number]
+	rect: PdfRect
+	quadPoints?: unknown
+	overlaidText?: unknown
 	url?: string
 	dest?: unknown
 }
@@ -29,6 +33,28 @@ export function externalLinkTarget(value: string): URL | undefined {
 
 function finite(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+// PDF.js normalizes each quad to [minX, maxY, maxX, maxY, minX, minY, maxX, minY].
+function quadRects(value: unknown): PdfRect[] | undefined {
+	if (typeof value !== "object" || value === null || !("length" in value)) return undefined
+	const points = value as ArrayLike<unknown>
+	if (points.length === 0 || points.length % 8 !== 0) return undefined
+	const rects: PdfRect[] = []
+	for (let index = 0; index < points.length; index += 8) {
+		const left = finite(points[index + 4])
+		const bottom = finite(points[index + 5])
+		const right = finite(points[index + 2])
+		const top = finite(points[index + 3])
+		if (left === undefined || bottom === undefined || right === undefined || top === undefined) return undefined
+		rects.push([left, bottom, right, top])
+	}
+	return rects
+}
+
+/** One hotspot per quadrilateral so wrapped links do not cover the gaps between lines. */
+export function linkRects(link: PdfLinkAnnotation): readonly PdfRect[] {
+	return quadRects(link.quadPoints) ?? [link.rect]
 }
 
 function destinationMode(dest: readonly unknown[]): unknown {
