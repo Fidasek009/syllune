@@ -415,65 +415,84 @@ async function checkPdfSelectionInBrowser() {
 	if (!document.querySelector<HTMLIFrameElement>("iframe")?.contentDocument?.querySelector("#close"))
 		throw Error("PDF reader did not restore after the reuse check")
 	// A drag that reaches a page before its text layer renders must not strand
-	// the selection end at the top of that page.
-	const unrendered = [...document.querySelectorAll<HTMLElement>(".pdf-page")]
-		.reverse()
-		.find((page) => page.querySelector(".textLayer")?.childNodes.length === 0)
-	if (!unrendered) throw Error("PDF fixture has no unrendered page for the drag check")
-	unrendered.scrollIntoView()
-	const unrenderedLayer = unrendered.querySelector<HTMLDivElement>(".textLayer")!
-	const stranding = document.createRange()
-	stranding.selectNodeContents(unrenderedLayer)
-	stranding.collapse(true)
-	pageSelection().removeAllRanges()
-	pageSelection().addRange(stranding)
-	const pageRect = unrendered.getBoundingClientRect()
-	const pointer = {
-		x: Math.round(pageRect.left + pageRect.width / 2),
-		y: Math.round(pageRect.top + pageRect.height / 3),
-	}
-	element<HTMLDivElement>("#pages").dispatchEvent(
-		new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: pointer.x, clientY: pointer.y }),
-	)
-	window.dispatchEvent(
-		new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: pointer.x, clientY: pointer.y }),
-	)
-	const dragDeadline = performance.now() + 10000
-	while (unrenderedLayer.childNodes.length === 0 && performance.now() < dragDeadline)
-		await new Promise<void>((resolve) => setTimeout(resolve, 25))
-	await new Promise<void>((resolve) => setTimeout(resolve, 50))
-	window.dispatchEvent(
-		new PointerEvent("pointerup", { bubbles: true, buttons: 0, clientX: pointer.x, clientY: pointer.y }),
-	)
-	const dragCaret = document.caretRangeFromPoint
-		? document.caretRangeFromPoint(pointer.x, pointer.y)
-		: (() => {
-				const position = document.caretPositionFromPoint?.(pointer.x, pointer.y)
-				if (!position) return null
-				const range = document.createRange()
-				range.setStart(position.offsetNode, position.offset)
-				range.collapse(true)
-				return range
-			})()
-	const dragSelection = pageSelection()
-	const dragRange = dragSelection.rangeCount ? dragSelection.getRangeAt(0) : undefined
-	if (
-		!dragCaret ||
-		!dragRange ||
-		dragRange.endContainer !== dragCaret.startContainer ||
-		dragRange.endOffset !== dragCaret.startOffset
-	)
-		throw Error(
-			"A drag across an unrendered PDF page was stranded at its top: " +
-				JSON.stringify({
-					pointer,
-					end: dragRange && [dragRange.endContainer.nodeName, dragRange.endOffset],
-					caret: dragCaret && [dragCaret.startContainer.nodeName, dragCaret.startOffset],
-					page: unrendered.getAttribute("aria-label"),
-				}),
+	// the selection end at the top of that page, whether it is still held or
+	// already released when the text arrives.
+	const dragCheck = async (releaseBeforeRender: boolean) => {
+		const unrendered = [...document.querySelectorAll<HTMLElement>(".pdf-page")]
+			.reverse()
+			.find((page) => page.querySelector(".textLayer")?.childNodes.length === 0)
+		if (!unrendered) throw Error("PDF fixture has no unrendered page for the drag check")
+		unrendered.scrollIntoView()
+		const layer = unrendered.querySelector<HTMLDivElement>(".textLayer")!
+		const anchorPage = [...document.querySelectorAll<HTMLElement>(".pdf-page")].find(
+			(page) => page.querySelector(".textLayer span")?.firstChild instanceof Text,
 		)
+		if (!anchorPage) throw Error("PDF fixture has no rendered page for the drag check")
+		const anchor = anchorPage.querySelector(".textLayer span")!.firstChild as Text
+		const stranding = document.createRange()
+		stranding.setStart(anchor, 0)
+		stranding.setEnd(layer, 0)
+		pageSelection().removeAllRanges()
+		pageSelection().addRange(stranding)
+		const rect = unrendered.getBoundingClientRect()
+		const pointer = {
+			x: Math.round(rect.left + rect.width / 2),
+			y: Math.round(rect.top + rect.height / 3),
+		}
+		const release = () =>
+			window.dispatchEvent(
+				new PointerEvent("pointerup", { bubbles: true, buttons: 0, clientX: pointer.x, clientY: pointer.y }),
+			)
+		element<HTMLDivElement>("#pages").dispatchEvent(
+			new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: pointer.x, clientY: pointer.y }),
+		)
+		window.dispatchEvent(
+			new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: pointer.x, clientY: pointer.y }),
+		)
+		if (releaseBeforeRender) release()
+		const deadline = performance.now() + 10000
+		while (layer.childNodes.length === 0 && performance.now() < deadline)
+			await new Promise<void>((resolve) => setTimeout(resolve, 25))
+		if (layer.childNodes.length === 0)
+			throw Error("PDF page text layer did not render for the drag check: " + unrendered.getAttribute("aria-label"))
+		await new Promise<void>((resolve) => setTimeout(resolve, 50))
+		if (!releaseBeforeRender) release()
+		const caret = document.caretRangeFromPoint
+			? document.caretRangeFromPoint(pointer.x, pointer.y)
+			: (() => {
+					const position = document.caretPositionFromPoint?.(pointer.x, pointer.y)
+					if (!position) return null
+					const range = document.createRange()
+					range.setStart(position.offsetNode, position.offset)
+					range.collapse(true)
+					return range
+				})()
+		const selection = pageSelection()
+		const range = selection.rangeCount ? selection.getRangeAt(0) : undefined
+		if (
+			!caret ||
+			!range ||
+			!selection.toString().trim() ||
+			range.endContainer !== caret.startContainer ||
+			range.endOffset !== caret.startOffset
+		)
+			throw Error(
+				"A drag across an unrendered PDF page was stranded at its top: " +
+					JSON.stringify({
+						released: releaseBeforeRender,
+						pointer,
+						end: range && [range.endContainer.nodeName, range.endOffset],
+						caret: caret && [caret.startContainer.nodeName, caret.startOffset],
+						text: selection.toString().slice(0, 40),
+						page: unrendered.getAttribute("aria-label"),
+					}),
+			)
+	}
+	await dragCheck(false)
+	await dragCheck(true)
 	return {
 		dragRepair: true,
+		releasedDragRepair: true,
 		toolbarReopensClosedControls: true,
 		contextMenuRestart: true,
 		repeatedNativeSelectionReusesReader: true,
