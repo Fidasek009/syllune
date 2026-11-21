@@ -1,6 +1,6 @@
 {
 	"extends": "./tsconfig.json",
-	"compilerOptions": { "lib": ["ES2024", "WebWorker"], "types": ["@webgpu/types"] },
+	"compilerOptions": { "lib": ["ES2024", "ESNext.TypedArrays", "WebWorker"], "types": ["@webgpu/types"] },
 	"include": ["src/speech/worker.ts", "src/speech/instrument-worker.ts"],
 	"exclude": []
 }

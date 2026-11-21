@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import protobuf from "protobufjs"
 
 import { instrumentInWorker } from "../src/speech/instrument-client.ts"
-import { instrumentModel } from "../src/speech/instrument.ts"
+import { instrumentModel, splitVoice } from "../src/speech/instrument.ts"
 
 const schema = protobuf.parse(await Bun.file(new URL("../vendor/onnx/onnx.proto3", import.meta.url)).text()).root
 const Model = schema.lookupType("onnx.ModelProto")
@@ -83,6 +83,40 @@ test("catalog exports with numeric or absent node names retain genuine duration 
 	}
 })
 
+test("duplicate graph operations share a value while keeping exported and nonstandard outputs", () => {
+	const original = Model.toObject(Model.decode(fixture())) as any
+	original.graph.node.unshift(
+		{ opType: "Shape", input: ["predictions"], output: ["first-shape"] },
+		{ opType: "Shape", input: ["predictions"], output: ["second-shape"] },
+		{ opType: "Shape", input: ["predictions"], output: ["output"] },
+		{ opType: "Shape", domain: "example", input: ["predictions"], output: ["custom-shape"] },
+		{ opType: "Concat", input: ["second-shape", "output", "custom-shape"], output: ["combined"] },
+	)
+	original.graph.valueInfo = [{ name: "second-shape" }, { name: "first-shape" }]
+	const bytes = Model.encode(original).finish()
+	const result = Model.toObject(Model.decode(instrumentModel(Uint8Array.from(bytes).buffer))) as any
+	expect(result.graph.node.slice(0, 4).map((node: { output: string[] }) => node.output)).toEqual([
+		["first-shape"],
+		["output"],
+		["custom-shape"],
+		["combined"],
+	])
+	expect(result.graph.node[3].input).toEqual(["first-shape", "output", "custom-shape"])
+	expect(result.graph.valueInfo).toEqual([{ name: "first-shape" }])
+
+	// A nested graph can capture a value by name even without an explicit node input.
+	original.graph.node.push({
+		opType: "If",
+		input: ["predicate"],
+		output: ["conditional"],
+		attribute: [{ name: "then_branch", type: 5, g: { name: "branch", output: [{ name: "second-shape" }] } }],
+	})
+	const nested = Model.encode(original).finish()
+	const kept = Model.toObject(Model.decode(instrumentModel(Uint8Array.from(nested).buffer))) as any
+	expect(kept.graph.node[1].output).toEqual(["second-shape"])
+	expect(kept.graph.node[4].input[0]).toBe("second-shape")
+})
+
 test("voice preparation runs in a worker and returns the same instrumented graph", async () => {
 	const source = Uint8Array.from(fixture()).buffer
 	const expected = instrumentModel(source.slice(0))
@@ -108,4 +142,71 @@ test("cancelling voice preparation terminates its worker without saving a result
 	controller.abort()
 	await expect(preparation).rejects.toMatchObject({ name: "AbortError" })
 	expect(terminated).toBe(true)
+})
+
+const vocoderFixture = (strides = [8, 8, 4]) =>
+	Model.encode(
+		Model.create({
+			irVersion: 7,
+			graph: {
+				name: "vocoder-fixture",
+				node: [
+					{ name: "scale", opType: "Mul", input: ["predictions", "scale"], output: ["latent"] },
+					{ name: "ceil", opType: "Ceil", input: ["predictions"], output: ["frames"] },
+					{ name: "durations", opType: "Identity", input: ["frames"], output: ["read_aloud_durations"] },
+					{ name: "relu", opType: "LeakyRelu", input: ["latent"], output: ["hidden"] },
+					...strides.map((stride, index) => ({
+						name: `ups-${index}`,
+						opType: "ConvTranspose",
+						input: [index ? `up-${index - 1}` : "hidden", `weight-${index}`],
+						output: [index === strides.length - 1 ? "output" : `up-${index}`],
+						attribute: [{ name: "strides", type: 7, ints: [stride] }],
+					})),
+				],
+				initializer: [
+					{ name: "scale", dataType: 1, dims: [1], rawData: Uint8Array.of(0, 0, 128, 63) },
+					...strides.map((_, index) => ({
+						name: `weight-${index}`,
+						dataType: 1,
+						dims: [192, 1, 16],
+						rawData: Uint8Array.of(0, 0, 128, 63),
+					})),
+				],
+				input: [{ name: "predictions" }],
+				output: [{ name: "output" }, { name: "read_aloud_durations" }],
+			},
+		}),
+	).finish()
+
+test("voice split keeps the vocoder in a decoder graph that takes the latent", () => {
+	const result = splitVoice(Uint8Array.from(vocoderFixture()).buffer)
+	const encoder = Model.toObject(Model.decode(result.encoder)) as any
+	const decoder = Model.toObject(Model.decode(result.decoder)) as any
+	expect(encoder.graph.node.map((node: { name: string }) => node.name)).toEqual(["scale", "ceil", "durations", "relu"])
+	expect(encoder.graph.output.map((value: { name: string }) => value.name)).toEqual(["hidden", "read_aloud_durations"])
+	expect(decoder.graph.node.map((node: { name: string }) => node.name)).toEqual(["ups-0", "ups-1", "ups-2"])
+	expect(decoder.graph.input.map((value: { name: string }) => value.name)).toEqual(["hidden"])
+	expect(decoder.graph.output.map((value: { name: string }) => value.name)).toEqual(["output"])
+	expect(decoder.graph.initializer.map((value: { name: string }) => value.name)).toEqual([
+		"weight-0",
+		"weight-1",
+		"weight-2",
+	])
+	expect(encoder.graph.initializer.map((value: { name: string }) => value.name)).toEqual(["scale"])
+})
+
+test("voice split rejects graphs whose vocoder cannot stand alone", () => {
+	expect(() => splitVoice(Uint8Array.from(vocoderFixture([8, 8, 2])).buffer)).toThrow("hop")
+	const withoutUpsampling = Model.encode(
+		Model.create({
+			irVersion: 7,
+			graph: {
+				name: "no-vocoder",
+				node: [{ name: "ceil", opType: "Ceil", input: ["predictions"], output: ["output"] }],
+				input: [{ name: "predictions" }],
+				output: [{ name: "output" }],
+			},
+		}),
+	).finish()
+	expect(() => splitVoice(Uint8Array.from(withoutUpsampling).buffer)).toThrow("one waveform")
 })

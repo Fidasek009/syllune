@@ -1,9 +1,11 @@
 import type { VoiceConfig } from "./voice-config.ts"
 
+export type VoiceModel = Blob | ArrayBuffer
+
 export interface StoredVoice {
 	id: string
 	sourceHash: string
-	model: ArrayBuffer
+	model: VoiceModel
 	config: VoiceConfig
 }
 

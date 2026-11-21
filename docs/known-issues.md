@@ -32,3 +32,15 @@ Last reviewed: **2026-11-14**.
 Reported on Windows/Zen with Czech voices. Firefox takes noticeably longer to start a new media resource than to continue an existing one, and the player currently creates one media element per reading chunk. The voice output itself is clean.
 
 This remains unresolved. A continuous Web Audio stream feeding one media element avoided the per-chunk starts but failed Firefox 159 native media-control activation, so production playback keeps per-clip elements to preserve OS play/pause controls. No extension-side fix is available at this point.
+
+## Firefox/Zen: CPU speech runs on one WebAssembly thread and has no GPU path
+
+Last reviewed: **2026-11-21**.
+
+Chromium extension pages are cross-origin isolated, so Syllune's speech worker gets `SharedArrayBuffer` and ONNX Runtime's four WebAssembly threads. Firefox extension pages are not cross-origin isolated: `SharedArrayBuffer` is undefined, a worker cannot receive one, and ONNX Runtime falls back to one thread when four are requested. The `cross_origin_embedder_policy` and `cross_origin_opener_policy` manifest values that isolate the Chrome build are ignored by Zen 1.24b (Firefox 159), and extension pages cannot send the COOP/COEP headers that isolation needs. Firefox 159 on Linux also does not expose `navigator.gpu`, so the WebGPU path is unavailable there too.
+
+Syllune compensates by splitting the voice before its vocoder and decoding overlapping latent windows in separate workers, each with one WebAssembly thread. This runs only when the runtime cannot get two threads. Vocoders above 24 MB use up to four workers; smaller ones use two. Encoder and flow work stays on one thread, and every vocoder worker builds its own session, so the first clip pays startup time that later clips do not.
+
+Measured on the Linux test machine with a 48-character first clip: Cori High's first audio fell from 7.6 s to 3.9 s and later clips from 7.4 s to 3.0 s. Cori Medium stayed at 1.8–1.9 s for the first clip and improved from 0.8 s to 0.6 s for later clips. A packaged Zen probe with a simulated GPU stall reached playback in 2.9–4.9 s against 4.8–5.6 s.
+
+The worker pool costs memory. Against a 1.24 GB RSS Zen page with no voice loaded, a cold Cori High session added 0.34 GB steady on one thread and 1.03 GB with four vocoder workers, with a 1.66 GB peak while loading. Each extra worker keeps roughly 0.19 GB for the 55 MB High vocoder. The four-core target uses three workers. Target hardware with four cores and no GPU remains unmeasured.

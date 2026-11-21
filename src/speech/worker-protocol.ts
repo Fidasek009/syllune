@@ -1,4 +1,5 @@
 import type { WordTiming } from "./phonemes.ts"
+import type { VoiceModel } from "./voice-store.ts"
 
 import { MAX_VOICE_ID_LENGTH, speechRequest } from "./protocol.ts"
 import { validateConfig, type VoiceConfig } from "./voice-config.ts"
@@ -9,7 +10,7 @@ function isArrayBuffer(value: unknown): value is ArrayBuffer {
 }
 
 export type WorkerRequest =
-	| { id: number; type: "load"; voice: string; config: VoiceConfig; model: ArrayBuffer }
+	| { id: number; type: "load"; voice: string; config: VoiceConfig; model: VoiceModel }
 	| { id: number; type: "synthesize"; text: string; speed: number }
 
 export type WorkerCommand =
@@ -42,7 +43,7 @@ export function isWorkerRequest(value: unknown): value is WorkerRequest {
 		!value.voice ||
 		value.voice.length > MAX_VOICE_ID_LENGTH ||
 		!("model" in value) ||
-		!isArrayBuffer(value.model) ||
+		!(isArrayBuffer(value.model) || value.model instanceof Blob) ||
 		!("config" in value)
 	)
 		return false
