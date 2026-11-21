@@ -90,7 +90,7 @@ const controller = new PlaybackController(engine, nativeSpeechAudio, {
 	},
 })
 const mediaControls = bindMediaSession(navigator.mediaSession, {
-	play: () => controller.mediaPlay(),
+	play: () => controller.mediaPlay(continuationText),
 	pause: () => controller.pause(),
 	previoustrack: () => previous.click(),
 	nexttrack: () => next.click(),
@@ -124,7 +124,7 @@ function updateControls() {
 		highlightFrame = 0
 	}
 	document.querySelector("#play-icon")!.setAttribute("d", playing ? "M8 5v14M16 5v14" : "m8 5 11 7-11 7z")
-	play.setAttribute("aria-label", ended ? "Read again" : playing ? "Pause" : "Play")
+	play.setAttribute("aria-label", playing ? "Pause" : "Play")
 	play.title = play.getAttribute("aria-label")!
 	play.disabled = !hasVoices || busy
 	previous.disabled = !hasVoices || busy || !controller.canPrevious
@@ -222,13 +222,17 @@ function updateVolume() {
 }
 volume.oninput = updateVolume
 volume.onchange = () => void browser.storage.local.set({ [localKeys.volume]: Number(volume.value) })
-play.onclick = () => {
-	void controller.play(async () => {
-		const selection = await send({ command: "selection" })
-		if (!("text" in selection)) throw new SpeechTextError(playbackCopy.selectionUnavailable)
-		return selection.text
-	})
+async function selectedText() {
+	const selection = await send({ command: "selection" })
+	if (!("text" in selection)) throw new SpeechTextError(playbackCopy.selectionUnavailable)
+	return selection.text
 }
+async function continuationText() {
+	const next = await send({ command: "continue" })
+	if (!("text" in next)) throw new SpeechTextError(playbackCopy.continuationUnavailable)
+	return next.text
+}
+play.onclick = () => void controller.play(selectedText, continuationText)
 previous.onclick = () => void controller.step(-1)
 next.onclick = () => void controller.step(1)
 button("close").onclick = () => {

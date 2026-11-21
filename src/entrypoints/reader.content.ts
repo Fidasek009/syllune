@@ -3,7 +3,14 @@ import { browser } from "wxt/browser"
 
 import { isExtensionBackgroundSender, isExtensionPageSender } from "../extension/sender.ts"
 import { createReaderDispatcher } from "../reading/dispatch.ts"
-import { captureDocument, type ReadingDocument, sourceRange } from "../reading/document.ts"
+import {
+	captureContinuation,
+	captureDocument,
+	type ReadingDocument,
+	type ReadingPoint,
+	selectionPoint,
+	sourceRange,
+} from "../reading/document.ts"
 import { currentWordHighlight, paintReaderHighlight } from "../reading/layout.ts"
 import { isStartReadingMessage, readingMessages, sourceChangedMessage } from "../reading/messages.ts"
 import { ReaderSession } from "../reading/session.ts"
@@ -22,6 +29,7 @@ export default defineContentScript({
 		const playerOrigin = new URL(browser.runtime.getURL("/")).origin
 		let host: HTMLDivElement | undefined
 		let frame: HTMLIFrameElement | undefined
+		let continuationPoint: ReadingPoint | undefined
 		const pageAddress = () => `${location.origin}${location.pathname}${location.search}`
 		let sourceUrl = pageAddress()
 		let navigationTimer: ReturnType<typeof setInterval> | undefined
@@ -36,18 +44,32 @@ export default defineContentScript({
 			host?.remove()
 			host = undefined
 			frame = undefined
+			continuationPoint = undefined
 			session.close()
 			CSS.highlights?.delete(key)
 			wordStyle.remove()
 			hostStyle.remove()
 		}
+		const captureSelection = () => {
+			const selected = captureDocument("selection")
+			const point = selectionPoint()
+			window.getSelection()?.removeAllRanges()
+			return { selected, point }
+		}
 		const dispatch = createReaderDispatcher({
 			session,
 			selection() {
 				if (!window.getSelection()?.toString().trim()) return undefined
-				const selected = captureDocument("selection")
-				window.getSelection()?.removeAllRanges()
+				const { selected, point } = captureSelection()
+				continuationPoint = point
 				return selected
+			},
+			continuation() {
+				const point = continuationPoint
+				if (!point) return undefined
+				const next = captureContinuation(point)
+				continuationPoint = undefined
+				return next
 			},
 			replaced() {
 				CSS.highlights?.delete(key)
@@ -72,17 +94,20 @@ export default defineContentScript({
 						frame.focus()
 						return Promise.resolve({ ok: true })
 					}
-					const captured = captureDocument(message.mode)
-					if (message.mode === "selection") window.getSelection()?.removeAllRanges()
+					const captured =
+						message.mode === "selection"
+							? captureSelection()
+							: { selected: captureDocument("article"), point: undefined }
 					sourceUrl = pageAddress()
-					if (frame?.isConnected) {
-						session.replace(captured)
-						CSS.highlights?.delete(key)
-						frame.contentWindow?.postMessage(sourceChangedMessage(), playerOrigin)
+					const open = frame?.isConnected
+					if (!open) close()
+					continuationPoint = captured.point
+					session.replace(captured.selected)
+					CSS.highlights?.delete(key)
+					if (open) {
+						frame?.contentWindow?.postMessage(sourceChangedMessage(), playerOrigin)
 						return Promise.resolve({ ok: true })
 					}
-					close()
-					session.replace(captured)
 					host = document.createElement("div")
 					host.dataset.readAloud = ""
 					const shadow = host.attachShadow({ mode: "open" })

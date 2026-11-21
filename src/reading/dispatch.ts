@@ -7,6 +7,7 @@ import { readerSize } from "./layout.ts"
 interface ReaderSurface {
 	session: ReaderSession<ReadingDocument>
 	selection(): ReadingDocument | undefined | Promise<ReadingDocument | undefined>
+	continuation(): ReadingDocument | undefined | Promise<ReadingDocument | undefined>
 	replaced(): void
 	close(): void
 	resize(size: ReturnType<typeof readerSize>): void
@@ -24,13 +25,15 @@ export function createReaderDispatcher(surface: ReaderSurface): (message: unknow
 				case "document":
 					if (!session.source) throw new Error("This reading session has no text.")
 					return { text: session.source.text }
-				case "selection": {
-					const selected = await surface.selection()
-					if (!session.id || message.session !== session.id) return { error: "This reading session has ended." }
-					if (!selected) return { text: null }
-					session.replace(selected)
+				case "selection":
+				case "continue": {
+					const revision = session.revision
+					const next = await (message.command === "selection" ? surface.selection() : surface.continuation())
+					if (!session.isCurrent(revision)) return { error: "This reading session has ended." }
+					if (!next) return { text: null }
+					session.replace(next)
 					surface.replaced()
-					return { text: selected.text }
+					return { text: next.text }
 				}
 				case "close":
 					surface.close()

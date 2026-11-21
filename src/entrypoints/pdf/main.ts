@@ -19,7 +19,7 @@ import { fetchPdf } from "../../reading/pdf-access.ts"
 import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
 import { destinationTop, externalLinkTarget, isPdfLinkAnnotation, linkRects } from "../../reading/pdf-links.ts"
 import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
-import { selectRange, sliceDocument } from "../../reading/selection.ts"
+import { continuationStart, selectionBounds, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
 import { parsePdfReaders, readingKeys } from "../../reading/state.ts"
 import "pdfjs-dist/web/pdf_viewer.css"
@@ -39,10 +39,13 @@ let tabId: number | undefined
 let alive = true
 let allowStart = true
 let initialSelection: string | undefined
-let pendingSelection: ReadingDocument | undefined
+let pendingSelection: ReadingScope | undefined
 let pendingSelectionError: string | undefined
 let pendingWholeDocument = false
 let pendingSelectionKey: string | undefined
+/** Builds the remainder of the document after the scope that just finished. */
+let continuation: Continuation | undefined
+let locatedContinuation: Continuation | undefined
 const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
 
 // The document promise lets an explicit command wait for startup without
@@ -55,6 +58,11 @@ void selectionLocated.promise.catch(() => {})
 
 interface PdfTextRun extends TextRun {
 	node: Text
+}
+type Continuation = () => Promise<ReadingDocument | undefined>
+interface ReadingScope {
+	document: ReadingDocument
+	continuation: Continuation | undefined
 }
 type PageTextContent = Awaited<ReturnType<PDFPageProxy["getTextContent"]>>
 interface PageState {
@@ -338,7 +346,7 @@ function wholeDocumentSelection(range: Range) {
 	return !pageAt(range.startContainer) && !pageAt(range.endContainer) && range.intersectsNode(pages)
 }
 
-function selectedDocument(range: Range): ReadingDocument | undefined {
+function selectedDocument(range: Range): ReadingScope | undefined {
 	const first = pageAt(range.startContainer)
 	const last = pageAt(range.endContainer)
 	const bounds =
@@ -351,7 +359,14 @@ function selectedDocument(range: Range): ReadingDocument | undefined {
 		if (!state) throw new Error("This PDF page is not available.")
 		if (!state.content) throw new Error("Some selected pages are still being prepared. Try again in a moment.")
 	}
-	return normalizeDocument(selectRange(pageDocuments(bounds.from, bounds.to), range), true)
+	const source = pageDocuments(bounds.from, bounds.to)
+	const selection = selectionBounds(source, range)
+	const endPageLength = pageStates[bounds.to - 1]!.text.length
+	return {
+		document: normalizeDocument(sliceDocument(source, selection.start, selection.end), true),
+		continuation: () =>
+			continuationDocument(bounds.to, continuationStart(source.text.length, endPageLength, selection.end)),
+	}
 }
 
 function resetPendingSelection() {
@@ -381,7 +396,7 @@ function captureSelection() {
 	}
 }
 
-async function takeSelection(): Promise<ReadingDocument | undefined> {
+async function takeSelection(): Promise<ReadingScope | undefined> {
 	const selection = getSelection()
 	const captured = pendingSelection
 	const failure = pendingSelectionError
@@ -390,11 +405,11 @@ async function takeSelection(): Promise<ReadingDocument | undefined> {
 	if (selection?.toString().trim() && selection.rangeCount) {
 		const range = selection.getRangeAt(0)
 		selection.removeAllRanges()
-		if (wholeDocumentSelection(range)) return articleDocument()
+		if (wholeDocumentSelection(range)) return { document: await articleDocument(), continuation: undefined }
 		return selectedDocument(range)
 	}
 	selection?.removeAllRanges()
-	if (whole) return articleDocument()
+	if (whole) return { document: await articleDocument(), continuation: undefined }
 	if (failure) throw new Error(failure)
 	return captured
 }
@@ -489,6 +504,8 @@ function clearMapping() {
 
 function stop() {
 	clearMapping()
+	continuation = undefined
+	locatedContinuation = undefined
 	session.close()
 	frame?.remove()
 	frame = undefined
@@ -510,18 +527,26 @@ function fail(error: unknown) {
 async function start(mode: "article" | "selection", initial?: string): Promise<void> {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
+	let next: Continuation | undefined
 	const started = await session.start(async () => {
 		if (mode === "article") {
 			const source = await articleDocument()
 			if (!source.text.trim()) throw new Error("This PDF has no readable text layer.")
+			next = undefined
 			return source
 		}
-		if (initial) return selectionLocated.promise
+		if (initial) {
+			const source = await selectionLocated.promise
+			next = locatedContinuation
+			return source
+		}
 		const selected = await takeSelection()
 		if (!selected) throw new Error("Select some PDF text first.")
-		return selected
+		next = selected.continuation
+		return selected.document
 	})
 	if (!started || !alive) return
+	continuation = next
 	clearMapping()
 	status.textContent = ""
 	status.setAttribute("aria-live", "polite")
@@ -579,7 +604,17 @@ browser.runtime.onMessage.addListener((message: unknown, sender) => {
 
 window.readAloudHost = createReaderDispatcher({
 	session,
-	selection: takeSelection,
+	async selection() {
+		const revision = session.revision
+		const scope = await takeSelection()
+		if (scope && session.isCurrent(revision)) continuation = scope.continuation
+		return scope?.document
+	},
+	async continuation() {
+		const build = continuation
+		continuation = undefined
+		return build ? await build() : undefined
+	},
 	replaced: clearMapping,
 	close: stop,
 	resize(size) {
@@ -708,23 +743,33 @@ window.addEventListener(
 	{ once: true },
 )
 
+/** Read page text in order, creating page shells as needed. */
+async function collectPages(from: number, onPage?: (number: number, total: number) => void) {
+	const pdf = await documentReady.promise
+	const parts: ReadingDocument[] = []
+	for (let number = from; number <= pdf.numPages; number++) {
+		if (!alive) throw new Error("This PDF reader has closed.")
+		onPage?.(number, pdf.numPages)
+		const state = await pageThrough(number)
+		await ensureContent(state)
+		parts.push(pageDocument(state))
+		await yieldToMain()
+	}
+	return concatDocuments(parts)
+}
+
 /** Build the full reading text only when the whole PDF is the requested scope. */
 function articleDocument(): Promise<ReadingDocument> {
 	return (articlePromise ??= (async () => {
-		const pdf = await documentReady.promise
-		const parts: ReadingDocument[] = []
-		for (let number = 1; number <= pdf.numPages; number++) {
-			if (!alive) throw new Error("This PDF reader has closed.")
-			if (!frame) {
-				status.setAttribute("aria-live", "off")
-				status.textContent = `Preparing text · ${number} of ${pdf.numPages} pages`
-			}
-			const state = await pageThrough(number)
-			await ensureContent(state)
-			parts.push(pageDocument(state))
-			await yieldToMain()
-		}
-		const reading = normalizeDocument(concatDocuments(parts), true)
+		const reading = normalizeDocument(
+			await collectPages(1, (number, total) => {
+				if (!frame) {
+					status.setAttribute("aria-live", "off")
+					status.textContent = `Preparing text · ${number} of ${total} pages`
+				}
+			}),
+			true,
+		)
 		articleBuilt = true
 		if (!frame) {
 			status.textContent = ""
@@ -735,6 +780,13 @@ function articleDocument(): Promise<ReadingDocument> {
 		articlePromise = undefined
 		throw error
 	}))
+}
+
+/** The rest of the PDF after the given offset in one page, or undefined at the end. */
+async function continuationDocument(pageNumber: number, offset: number): Promise<ReadingDocument | undefined> {
+	const source = await collectPages(pageNumber)
+	const next = normalizeDocument(sliceDocument(source, offset, source.text.length), true)
+	return next.text.trim() ? next : undefined
 }
 
 /** Fill page geometry in the background so the viewer scrolls like a normal document. */
@@ -755,6 +807,7 @@ function scrollToSelected(scope: ReadingDocument) {
 async function locateInitialSelection(selection: string, revision: number) {
 	const pdf = await documentReady.promise
 	const search = new PdfSelectionSearch(selection)
+	locatedContinuation = undefined
 	status.setAttribute("aria-live", "off")
 	try {
 		for (let number = 1; number <= pdf.numPages; number++) {
@@ -797,6 +850,7 @@ async function locateInitialSelection(selection: string, revision: number) {
 			scrollToSelected(scope)
 			status.textContent = ""
 			status.setAttribute("aria-live", "polite")
+			locatedContinuation = () => continuationDocument(to, match.end)
 			selectionLocated.resolve(scope)
 			return
 		}

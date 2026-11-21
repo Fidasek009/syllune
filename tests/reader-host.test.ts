@@ -6,6 +6,8 @@ import { readerSize, shouldScrollToWord } from "../src/reading/layout.ts"
 test("reader replies must match the requested command on both reading surfaces", () => {
 	expect(isReaderResponse({ command: "document" }, { text: "selected text" })).toBe(true)
 	expect(isReaderResponse({ command: "selection" }, { text: null })).toBe(true)
+	expect(isReaderResponse({ command: "continue" }, { text: null })).toBe(true)
+	expect(isReaderResponse({ command: "continue" }, { text: "rest of the page" })).toBe(true)
 	expect(isReaderResponse({ command: "document" }, { text: null })).toBe(false)
 	expect(isReaderResponse({ command: "highlight", start: 0, end: 1 }, { text: "wrong reply" })).toBe(false)
 	expect(isReaderResponse({ command: "close" }, { ok: true })).toBe(true)
@@ -19,6 +21,7 @@ test("reader requests validate commands and reject invalid values before reachin
 	for (const command of [
 		{ command: "document" },
 		{ command: "selection" },
+		{ command: "continue" },
 		{ command: "close" },
 		{ command: "highlight", start: 0, end: 0 },
 		{ command: "highlight", start: 3, end: 12 },

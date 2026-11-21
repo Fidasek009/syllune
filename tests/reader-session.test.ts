@@ -46,10 +46,33 @@ test("closing a reader prevents pending preparation from reopening it", async ()
 	expect(session.source).toBeUndefined()
 })
 
+test("a continuation that finishes after a scope replacement cannot change the session", async () => {
+	const session = new ReaderSession<ReadingDocument>()
+	session.replace(scope("selected text"))
+	const pending = Promise.withResolvers<ReadingDocument>()
+	let replaced = 0
+	const host = createReaderDispatcher({
+		session,
+		selection: () => undefined,
+		continuation: () => pending.promise,
+		replaced: () => replaced++,
+		close: () => session.close(),
+		resize: () => {},
+		highlight: () => {},
+	})
+	const request = host({ session: session.id, command: "continue" })
+	session.replace(scope("a newer selection"))
+	pending.resolve(scope("stale remainder"))
+	expect(await request).toEqual({ error: "This reading session has ended." })
+	expect(session.source?.text).toBe("a newer selection")
+	expect(replaced).toBe(0)
+})
+
 test("both reader surfaces share selection replacement and stale-session semantics", async () => {
 	const session = new ReaderSession<ReadingDocument>()
 	session.replace(scope("initial scope"))
 	let selection: ReadingDocument | undefined
+	let continuation: ReadingDocument | undefined
 	let replaced = 0
 	let painted: [number, number] | undefined
 	const host = createReaderDispatcher({
@@ -57,6 +80,11 @@ test("both reader surfaces share selection replacement and stale-session semanti
 		selection: () => {
 			const next = selection
 			selection = undefined
+			return next
+		},
+		continuation: () => {
+			const next = continuation
+			continuation = undefined
 			return next
 		},
 		replaced: () => {
@@ -75,6 +103,11 @@ test("both reader surfaces share selection replacement and stale-session semanti
 	expect(await host({ session: id, command: "selection" })).toEqual({ text: "new selection" })
 	expect(replaced).toBe(1)
 	expect(await host({ session: id, command: "document" })).toEqual({ text: "new selection" })
+	expect(await host({ session: id, command: "continue" })).toEqual({ text: null })
+	continuation = scope("text after the selection")
+	expect(await host({ session: id, command: "continue" })).toEqual({ text: "text after the selection" })
+	expect(session.source?.text).toBe("text after the selection")
+	expect(replaced).toBe(2)
 	expect(await host({ session: id, command: "highlight", start: 0, end: 3 })).toEqual({ ok: true })
 	expect(painted).toEqual([0, 3])
 	expect(await host({ session: id, command: "highlight", start: 3, end: 0 })).toEqual({

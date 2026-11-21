@@ -12,6 +12,11 @@ export interface ReadingDocument {
 	text: string
 	runs: TextRun[]
 }
+/** A live DOM position at the end of a selection. */
+export interface ReadingPoint {
+	container: Node
+	offset: number
+}
 
 /** Join page documents in reading order while retaining each page's live DOM binding. */
 export function concatDocuments(parts: readonly ReadingDocument[]): ReadingDocument {
@@ -41,14 +46,17 @@ export function overlappingRuns(source: ReadingDocument, start: number, end: num
 	return result
 }
 
-/** Preserve DOM offsets while excluding page chrome from article reading. */
-export function captureDocument(mode: "selection" | "article"): ReadingDocument {
-	const selection = window.getSelection()
-	const range = mode === "selection" && selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
-	if (mode === "selection" && (!range || range.collapsed)) throw new Error("Select some text to read first.")
-	let root: Node =
-		range?.commonAncestorContainer ?? document.querySelector("article, main, [role=main]") ?? document.body
-	if (root.nodeType === Node.TEXT_NODE) root = root.parentNode!
+const pageTooLong = "This page is too long to read in one session. Select a smaller section."
+const remainderTooLong =
+	"The rest of this page is too long to read in one session. Select a smaller section to continue."
+
+/** Collect text and live DOM offsets from a subtree, optionally within a range. */
+function capture(
+	root: Node,
+	range: Range | null,
+	excludeChrome: boolean,
+	tooLong = pageTooLong,
+): ReadingDocument | undefined {
 	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
 	const runs: TextRun[] = []
 	let text = "",
@@ -64,7 +72,7 @@ export function captureDocument(mode: "selection" | "article"): ReadingDocument 
 		if (!parent || parent.closest("script,style,noscript,template,[hidden],[aria-hidden=true],[data-read-aloud]"))
 			continue
 		if (
-			!range &&
+			excludeChrome &&
 			parent.closest("nav,header,footer,aside,form,button,[role=navigation],[role=banner],[role=contentinfo]")
 		)
 			continue
@@ -79,11 +87,49 @@ export function captureDocument(mode: "selection" | "article"): ReadingDocument 
 		lastBlock = block
 		runs.push({ from: text.length, to: text.length + value.length, node, offset: from })
 		text += value
-		if (text.length > maximumReadingCharacters)
-			throw new Error("This page is too long to read in one session. Select a smaller section.")
+		if (text.length > maximumReadingCharacters) throw new Error(tooLong)
 	}
-	if (!text.trim()) throw new Error("No readable text was found on this page.")
+	if (!text.trim()) return undefined
 	return normalizeDocument({ text, runs })
+}
+
+function articleRoot(): Element {
+	return document.querySelector("article, main, [role=main]") ?? document.body
+}
+
+export function captureDocument(mode: "selection" | "article"): ReadingDocument {
+	const selection = window.getSelection()
+	const range = mode === "selection" && selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
+	if (mode === "selection" && (!range || range.collapsed)) throw new Error("Select some text to read first.")
+	let root: Node = range?.commonAncestorContainer ?? articleRoot()
+	if (root.nodeType === Node.TEXT_NODE) root = root.parentNode!
+	const captured = capture(root, range, mode === "article")
+	if (!captured) throw new Error("No readable text was found on this page.")
+	return captured
+}
+
+/** The end of the current selection, before the page removes it. */
+export function selectionPoint(): ReadingPoint | undefined {
+	const selection = window.getSelection()
+	if (!selection?.rangeCount) return undefined
+	const range = selection.getRangeAt(0)
+	return { container: range.endContainer, offset: range.endOffset }
+}
+
+/** The article text after a previous selection; undefined when nothing readable remains. */
+export function captureContinuation(point: ReadingPoint): ReadingDocument | undefined {
+	if (!point.container.isConnected) return undefined
+	let root = articleRoot()
+	if (!root.contains(point.container)) root = document.body
+	const range = document.createRange()
+	try {
+		range.setStart(point.container, point.offset)
+		range.setEnd(root, root.childNodes.length)
+	} catch {
+		return undefined
+	}
+	// Continuation reads like article mode, so page chrome stays excluded.
+	return capture(root, range, true, remainderTooLong)
 }
 
 export function sourceRange(source: ReadingDocument, start: number, end: number): Range | null {

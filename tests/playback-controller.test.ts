@@ -193,6 +193,36 @@ test("a new selection replaces the scope and its sentence navigation", async () 
 	expect(f.controller.state.kind).toBe("ended")
 })
 
+test("Play after a selection ends reads past the scope instead of repeating it", async () => {
+	const f = fixture()
+	await f.controller.setScope("Selected text.", "voice", "en", 1)
+	await settle()
+	f.audios[0]!.end()
+	await settle()
+	expect(f.controller.state.kind).toBe("ended")
+	await f.controller.play(
+		async () => null,
+		async () => "Text after the selection.",
+	)
+	await settle()
+	expect(f.controller.playing).toBe(true)
+	expect(f.inputs.at(-1)).toBe("Text after the selection.")
+})
+
+test("Play after the reading scope ends replays it when nothing follows", async () => {
+	const f = fixture()
+	await f.controller.setScope("Only this sentence.", "voice", "en", 1)
+	await settle()
+	f.audios[0]!.end()
+	await settle()
+	await f.controller.play(
+		async () => null,
+		async () => null,
+	)
+	await settle()
+	expect(f.inputs.filter((text) => text === "Only this sentence.")).toHaveLength(2)
+})
+
 test("closing while a selection request is pending cannot replace a scope", async () => {
 	const f = fixture(),
 		selection = deferred<string | null>()
