@@ -1,7 +1,7 @@
 import { join } from "node:path"
 
 import { productName } from "../src/extension/brand"
-import { parseVersion } from "./release-version"
+import { buildVersion, parseVersion } from "./release-version"
 
 function section(markdown: string, heading: string) {
 	const value = markdown.split(`## ${heading}\n`)[1]?.split("\n## ")[0]?.trim()
@@ -47,7 +47,6 @@ export async function firefoxMetadata(version: string, root = process.cwd()) {
 }
 
 if (import.meta.main) {
-	const { buildVersion } = await import("./release-version")
 	await firefoxMetadata(buildVersion())
 	console.log("Firefox listing, reviewer instructions and separate license terms are present.")
 }

@@ -31,7 +31,7 @@ Once the existing license/product acceptance work is complete, a pushed `vX.Y.Z`
 
 The current combined-distribution declaration retains GPL-3.0-or-later and original-source MIT terms through AMO's custom-license field, including full GPL/MIT texts and notices. AMO's predefined choices lack GPL-3.0-or-later; selecting MIT alone would misdescribe this package. `web-ext` itself is MPL-2.0 development/publishing tooling, downloaded from the pinned lockfile and not included in the installed extension. The two open model/preview assessments are tracked in [the licensing checklist](licensing.md); the materials check does not resolve them.
 
-AMO controls review and signing; successful submission does not guarantee approval. The pipeline does not wait days for review or download a signed XPI. After both stores accept their submissions, it publishes the GitHub release automatically. If AMO accepts a version and a later source/listing update fails, CD fails; inspect and repair the accepted version rather than blindly resubmitting it. See [release recovery](releasing.md#acceptance-and-retries).
+AMO controls review and signing; successful submission does not guarantee approval. The pipeline does not wait days for review or download a signed XPI. After both stores accept their submissions, it publishes the GitHub release automatically. If AMO accepts a version and a later source/listing update fails, CD fails; repair the accepted version in the AMO dashboard rather than resubmitting it. See [acceptance and retries](releasing.md#acceptance-and-retries).
 
 ## Evidence and verification
 

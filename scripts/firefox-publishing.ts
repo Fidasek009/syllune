@@ -14,8 +14,6 @@ interface FirefoxOptions {
 	issuer: string
 	secret: string
 	root?: string
-	// Repair an accepted version without calling Mozilla's upload client again.
-	metadataOnly?: boolean
 }
 interface Addon {
 	[key: string]: unknown
@@ -47,8 +45,11 @@ export async function publishFirefox(
 		throw new Error("Firefox package version or permanent ID does not match publishing configuration")
 	const metadata = await firefoxMetadata(version, root)
 	const privacy = await Bun.file(join(root, "PRIVACY.md")).text()
-	const screenshots = ["voices-english.png", "voices-czech.png"]
-	for (const file of ["icon-128.png", ...screenshots])
+	const screenshots = [
+		["voices-english.png", "English"],
+		["voices-czech.png", "Czech"],
+	] as const
+	for (const file of ["icon-128.png", ...screenshots.map(([file]) => file)])
 		if (!(await Bun.file(join(root, "store/assets", file)).exists())) throw new Error(`Missing store asset: ${file}`)
 	const auth = new JwtApiAuth({ apiKey: issuer, apiSecret: secret })
 	const retryDeadline = Date.now() + 75 * 60_000
@@ -119,48 +120,32 @@ export async function publishFirefox(
 
 	const temp = await mkdtemp(join(tmpdir(), "read-aloud-amo-"))
 	try {
-		if (options.metadataOnly) {
-			if (!existing) throw new Error("Cannot repair metadata: Firefox listing does not exist")
-			const response = await request(`${addonPath}versions/${version}/`)
-			if (!response.ok) throw new Error("Cannot repair metadata: Firefox version does not exist")
-			const accepted = await response.json()
-			if (
-				accepted.version !== version ||
-				accepted.channel !== "listed" ||
-				!accepted.source ||
-				accepted.is_disabled ||
-				!["unreviewed", "public"].includes(accepted.file?.status)
-			)
-				throw new Error("Cannot repair metadata: expected an active listed version with reviewer sources")
-			console.log(`Repairing existing Firefox ${version} (AMO version ${accepted.id}); no extension or source upload.`)
-		} else {
-			// Use Mozilla's exported client rather than rebuilding/repacking the CI ZIP.
-			// PUT by permanent GUID creates the first listing or submits an update.
-			const result = await signAddon({
-				apiKey: issuer,
-				apiSecret: secret,
-				amoBaseUrl: apiBase,
-				id: extensionId,
-				xpiPath: zip,
-				downloadDir: temp,
-				channel: "listed",
-				savedUploadUuidPath: join(temp, "upload.json"),
-				metaDataJson: metadata,
-				submissionSource: sources,
-				validationCheckTimeout: 300_000,
-				// Store review can take days. The job waits for submission and sources;
-				// AMO controls approval and automatic publication.
-				approvalCheckTimeout: 0,
-				userAgentString: "read-aloud-release/web-ext",
-			})
-			if (result.id !== extensionId) throw new Error("AMO returned a different permanent extension ID")
-			// Mozilla's submission client also consumes the shared write quota.
-			// Start metadata outside its burst window, then space further writes.
-			await pause(61_000)
-		}
+		// Use Mozilla's exported client rather than rebuilding/repacking the CI ZIP.
+		// PUT by permanent GUID creates the first listing or submits an update.
+		const result = await signAddon({
+			apiKey: issuer,
+			apiSecret: secret,
+			amoBaseUrl: apiBase,
+			id: extensionId,
+			xpiPath: zip,
+			downloadDir: temp,
+			channel: "listed",
+			savedUploadUuidPath: join(temp, "upload.json"),
+			metaDataJson: metadata,
+			submissionSource: sources,
+			validationCheckTimeout: 300_000,
+			// Store review can take days. The job waits for submission and sources;
+			// AMO controls approval and automatic publication.
+			approvalCheckTimeout: 0,
+			userAgentString: "read-aloud-release/web-ext",
+		})
+		if (result.id !== extensionId) throw new Error("AMO returned a different permanent extension ID")
+		// Mozilla's submission client also consumes the shared write quota.
+		// Start metadata outside its burst window, then space further writes.
+		await pause(61_000)
 		const { version: _, ...listing } = metadata
-		// PUT already configures a new listing. For updates/recovery, send only
-		// changed fields so reruns do not consume AMO's small hourly write quota.
+		// PUT already configures a new listing. For updates, send only changed fields
+		// so reruns do not consume AMO's small hourly write quota.
 		const changes = Object.fromEntries(
 			Object.entries(listing).filter(([key, value]) => !isDeepStrictEqual(existing?.[key], value)),
 		)
@@ -176,7 +161,7 @@ export async function publishFirefox(
 			await request(addonPath, "PATCH", icon)
 		}
 		const current: Addon = await (await request(addonPath)).json()
-		for (const [index, file] of screenshots.entries()) {
+		for (const [index, [file, language]] of screenshots.entries()) {
 			const position = index + 1
 			let preview = current.previews.find((item) => item.position === position)
 			if (!preview) {
@@ -186,7 +171,7 @@ export async function publishFirefox(
 				preview = await (await request(`${addonPath}previews/`, "POST", image)).json()
 			}
 			if (!preview || !Number.isInteger(preview.id)) throw new Error("AMO returned an invalid screenshot ID")
-			const caption = `Choose ${index === 0 ? "an English" : "a Czech"} voice before downloading it.`
+			const caption = `Choose ${language === "English" ? "an" : "a"} ${language} voice before downloading it.`
 			if (preview.caption?.["en-US"] !== caption)
 				await request(`${addonPath}previews/${preview.id}/`, "PATCH", { caption: { "en-US": caption }, position })
 		}

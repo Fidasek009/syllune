@@ -4,16 +4,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { publishRelease } from "../scripts/github-release"
-import { submissionArgs } from "../scripts/publish-extension"
+import { chromeSubmissionArgs } from "../scripts/publish-extension"
 
-test("Chrome uses explicit WXT dry-run and live modes; Firefox uses its dedicated publisher", () => {
-	const args = submissionArgs("chrome", "0.0.0", true)
+test("Chrome uses explicit WXT dry-run and live modes", () => {
+	const args = chromeSubmissionArgs("0.0.0", true)
 	expect(args.slice(0, 3)).toEqual(["submit", "--dry-run", "true"])
 	expect(args).toContain("--chrome-zip")
-	expect(() => submissionArgs("chrome", "0.0.0", false)).toThrow()
-	expect(submissionArgs("chrome", "0.1.0", false).slice(0, 3)).toEqual(["submit", "--dry-run", "false"])
-	expect(() => submissionArgs("firefox", "0.1.0", true)).toThrow()
-	expect(() => submissionArgs("edge", "0.1.0", true)).toThrow()
+	expect(() => chromeSubmissionArgs("0.0.0", false)).toThrow()
+	expect(chromeSubmissionArgs("0.1.0", false).slice(0, 3)).toEqual(["submit", "--dry-run", "false"])
 })
 
 test("release retries recover after draft creation, partial upload and publication response loss", async () => {
@@ -51,11 +49,11 @@ test("release retries recover after draft creation, partial upload and publicati
 				}
 				return { exitCode: 0, stdout: "" }
 			}
-			await expect(publishRelease("v0.1.0", [file], "notes.md", run)).rejects.toThrow()
-			await publishRelease("v0.1.0", [file], "notes.md", run)
+			await expect(publishRelease("v0.1.0", [file], run)).rejects.toThrow()
+			await publishRelease("v0.1.0", [file], run)
 			expect(creations).toBe(1)
 			expect(draft).toBe(false)
-			await publishRelease("v0.1.0", [file], "notes.md", run)
+			await publishRelease("v0.1.0", [file], run)
 		}
 	} finally {
 		await rm(temp, { recursive: true, force: true })
@@ -78,12 +76,10 @@ test("published releases repair missing assets but refuse to overwrite changed b
 		return { exitCode: 0, stdout: "" }
 	}
 	try {
-		await publishRelease("v0.1.0", [existing, missing], "notes.md", run)
+		await publishRelease("v0.1.0", [existing, missing], run)
 		expect(uploads).toEqual([["release", "upload", "v0.1.0", missing]])
 		contents = "different remote bytes"
-		await expect(publishRelease("v0.1.0", [existing, missing], "notes.md", run)).rejects.toThrow(
-			"Published asset differs",
-		)
+		await expect(publishRelease("v0.1.0", [existing, missing], run)).rejects.toThrow("Published asset differs")
 		expect(uploads.length).toBe(1)
 	} finally {
 		await rm(temp, { recursive: true, force: true })
