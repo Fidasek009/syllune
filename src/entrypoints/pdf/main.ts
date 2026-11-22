@@ -213,7 +213,6 @@ function ensureText(state: PageState): Promise<void> {
 			run.node = node
 			owners.set(node, state)
 		}
-		repairDragSelection(state)
 	})().catch((error) => {
 		delete state.textReady
 		throw error
@@ -423,105 +422,12 @@ function takeWholeDocumentSelection() {
 
 document.addEventListener("selectionchange", captureSelection)
 pages.addEventListener("contextmenu", captureSelection)
-
-/**
- * A drag that crosses a page whose text layer is still rendering has no text to
- * resolve against, so the browser parks the selection end at the top of that
- * page. Remember the pointer so the end can be restored when the text arrives.
- */
-interface SelectionDrag {
-	x: number
-	y: number
-	moved: boolean
-	anchor?: Node
-}
-let selectionDrag: SelectionDrag | undefined
-/** A drag released over a page whose text layer had not rendered yet. */
-let pendingDragRepair: { x: number; y: number; anchor: Node; page: HTMLElement } | undefined
-
 pages.addEventListener("pointerdown", (event) => {
-	if (event.button !== 0) return
-	resetPendingSelection()
-	pendingDragRepair = undefined
-	selectionDrag = { x: event.clientX, y: event.clientY, moved: false }
+	if (event.button === 0) resetPendingSelection()
 })
-window.addEventListener(
-	"pointermove",
-	(event) => {
-		if (!selectionDrag) return
-		// A release over the player iframe never reaches this window's pointerup.
-		if (!(event.buttons & 1)) {
-			selectionDrag = undefined
-			return
-		}
-		selectionDrag.x = event.clientX
-		selectionDrag.y = event.clientY
-		selectionDrag.moved = true
-		if (selectionDrag.anchor === undefined) {
-			const anchor = getSelection()?.anchorNode
-			if (anchor) selectionDrag.anchor = anchor
-		}
-	},
-	{ passive: true },
-)
-window.addEventListener("pointerup", (event) => {
-	const drag = selectionDrag
-	selectionDrag = undefined
-	if (!drag?.moved || !drag.anchor) return
-	const selection = getSelection()
-	if (!selection?.rangeCount || selection.anchorNode !== drag.anchor) return
-	const element = document.elementFromPoint(event.clientX, event.clientY)
-	const page = element ? pageAt(element) : undefined
-	if (!page || page.container.childNodes.length) return
-	pendingDragRepair = { x: event.clientX, y: event.clientY, anchor: drag.anchor, page: page.section }
-})
-function endDrag() {
-	selectionDrag = undefined
-	pendingDragRepair = undefined
-}
-window.addEventListener("pointercancel", endDrag)
-window.addEventListener("blur", endDrag)
 document.addEventListener("keydown", (event) => {
-	endDrag()
 	if (event.key === "Escape" || event.key.startsWith("Arrow")) resetPendingSelection()
 })
-
-function caretAt(x: number, y: number) {
-	const range = document.caretRangeFromPoint?.(x, y)
-	if (range) return range
-	const position = document.caretPositionFromPoint?.(x, y)
-	if (!position) return undefined
-	const caret = document.createRange()
-	caret.setStart(position.offsetNode, position.offset)
-	caret.collapse(true)
-	return caret
-}
-
-function repairDragSelection(state: PageState) {
-	const pending = selectionDrag?.moved ? undefined : pendingDragRepair
-	const pointer = selectionDrag?.moved ? selectionDrag : pendingDragRepair
-	if (!pointer) return
-	if (pending) {
-		// Only the page the user released over uses up the pending repair, and
-		// only while the released drag is still the current selection.
-		if (pending.page !== state.section) return
-		pendingDragRepair = undefined
-	}
-	const selection = getSelection()
-	if (!selection?.rangeCount || (pending && selection.anchorNode !== pending.anchor)) return
-	const caret = caretAt(pointer.x, pointer.y)
-	if (!caret) return
-	const node = caret.startContainer
-	const element = node instanceof Element ? node : node.parentElement
-	if (element?.closest(".pdf-page") !== state.section) return
-	const range = selection.getRangeAt(0)
-	if (range.endContainer === caret.startContainer && range.endOffset === caret.startOffset) return
-	try {
-		selection.extend(caret.startContainer, caret.startOffset)
-	} catch {
-		// Keep the browser's endpoint if it cannot be moved.
-	}
-}
 
 function setPageMetrics(section: HTMLElement, viewport: PageState["viewport"], scale: number) {
 	section.style.width = `${viewport.width}px`
