@@ -6,6 +6,7 @@ import { createReaderDispatcher } from "../reading/dispatch.ts"
 import {
 	captureContinuation,
 	captureDocument,
+	emptyDocumentMessage,
 	type ReadingDocument,
 	type ReadingPoint,
 	selectionPoint,
@@ -13,6 +14,7 @@ import {
 } from "../reading/document.ts"
 import { currentWordHighlight, paintReaderHighlight } from "../reading/layout.ts"
 import { isStartReadingMessage, readingMessages, sourceChangedMessage } from "../reading/messages.ts"
+import { isEmbeddedPdfUrl } from "../reading/pdf-embed.ts"
 import { ReaderSession } from "../reading/session.ts"
 
 import currentWordStyle from "../reading/current-word.css?inline"
@@ -31,6 +33,11 @@ export default defineContentScript({
 		let frame: HTMLIFrameElement | undefined
 		let continuationPoint: ReadingPoint | undefined
 		const pageAddress = () => `${location.origin}${location.pathname}${location.search}`
+		/** A text-free wrapper page can still carry the PDF in its viewer frame. */
+		const embeddedPdf = () => {
+			for (const frame of document.querySelectorAll("iframe")) if (isEmbeddedPdfUrl(frame.src)) return frame.src
+			return undefined
+		}
 		let sourceUrl = pageAddress()
 		let navigationTimer: ReturnType<typeof setInterval> | undefined
 		const key = currentWordHighlight
@@ -124,6 +131,14 @@ export default defineContentScript({
 					}, 300)
 					return Promise.resolve({ ok: true })
 				} catch (error) {
+					const pdf =
+						message.mode === "article" && error instanceof Error && error.message === emptyDocumentMessage
+							? embeddedPdf()
+							: undefined
+					if (pdf) {
+						close()
+						return Promise.resolve({ pdf })
+					}
 					return Promise.resolve({ error: error instanceof Error ? error.message : "This page could not be read." })
 				}
 			}
