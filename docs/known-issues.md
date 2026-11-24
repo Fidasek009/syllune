@@ -13,17 +13,13 @@ When direct reading is blocked, the reader offers a file choice and, in Chrome, 
 
 References: [Mozilla file-access issue 2085199](https://bugzilla.mozilla.org/show_bug.cgi?id=2085199), [Firefox PDF-viewer restrictions](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Content_scripts#limitations), [file-picker restrictions](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/file#notes), [Chrome file-access settings](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions#allow-access), and [Chrome `SetAllowFileAccess`](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/extensions/extension_util.cc).
 
-## A native-viewer selection can take longer to start deep in a long PDF
+## PDF text is selected in Syllune's reader, not the browser's viewer
 
-Last reviewed: **2026-11-14**.
+Last reviewed: **2026-11-24**.
 
-The browser's PDF viewer gives Syllune the selected text, not the page number or its coordinates. Syllune scans page text with PDF.js until it finds the selection, then renders that page's text layer, slices and normalizes the matched printed span, and opens the player with that same span as both the speech and highlight source. This guarantees that audio starts on the selected page with a working highlight.
+Chrome and Firefox report the selected string from their built-in PDF viewers, but not the page, offsets, or coordinates of the selection, and extensions cannot inject into those viewers. Mapping that string back into PDF.js text is a guess: the same word or sentence can appear many times, so the guessed span can be a different occurrence. Syllune no longer guesses. A PDF opened from the native viewer opens the extension's reader tab, and selections made there map exactly through the reader's text layer.
 
-If the span cannot be located or its text layer cannot be mapped, playback does not start. The reader shows a recovery message instead of starting audio without highlighting.
-
-The scan follows reading order, so cost grows with the page distance. On the Linux Chromium test machine with a warm voice, a selection on page 400 of a 462-page synthetic PDF opened the player after 2.6 seconds; a page-1 selection opened after 1.0 second. Whole-PDF preparation for the same document took 3.5 seconds. These numbers measure page location and player readiness, not first-audio latency or target hardware.
-
-If the selected text appears more than once, the native handoff reads the first match that does not start or end inside a printed word. Select the passage inside Syllune's reader when the exact occurrence matters; that selection maps directly and is exact.
+Reading a selection directly from the browser's PDF viewer is therefore not supported. Select the passage in the Syllune reader tab that opens for the PDF and press Play.
 
 ## Firefox/Zen: first words of a new reading clip can be inaudible
 
