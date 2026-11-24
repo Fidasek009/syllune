@@ -217,7 +217,7 @@ async function checkPdfSelectionInBrowser() {
 			type: "probe-context-menu",
 			omitTabUrl: true,
 			tab,
-			info: { menuItemId: "read-selection", pageUrl: location.href, selectionText: restartRange.toString() },
+			info: { menuItemId: "read-selection", pageUrl: location.href },
 		}),
 	)
 	const deadline = performance.now() + 5000
@@ -301,47 +301,48 @@ async function checkPdfSelectionInBrowser() {
 		while ((await api.tabs.get(secondSource.id)).status !== "complete" && performance.now() < loadDeadline)
 			await new Promise<void>((resolve) => setTimeout(resolve, 50))
 		await new Promise<void>((resolve) => setTimeout(resolve, 500))
-		const invoke = async (selectionText = "This thesis") =>
+		const invoke = async () =>
 			record(
 				await api.runtime.sendMessage({
 					type: "probe-context-menu",
 					omitReaderUrls: true,
 					tab: { id: secondSource.id, url: sourceUrl },
-					info: { menuItemId: "read-selection", pageUrl: sourceUrl, selectionText },
+					info: { menuItemId: "read-selection", pageUrl: sourceUrl },
 				}),
 			)
+		const navigation = (result: Record<string, unknown>): URL | undefined => {
+			const trace = result.trace
+			if (!Array.isArray(trace)) return undefined
+			const entry = trace
+				.map((value: unknown) => record(value))
+				.filter((value) => value.type === "update-tab" && typeof value.url === "string")
+				.at(-1)
+			return typeof entry?.url === "string" ? new URL(entry.url) : undefined
+		}
 		const first = await invoke()
-		if (!first?.ok) throw Error("First native PDF selection failed: " + JSON.stringify(first))
+		if (!first?.ok) throw Error("First native PDF read failed: " + JSON.stringify(first))
 		const readers = await readerMap()
 		const matching = Object.entries(readers).filter(([, source]) => source === secondSource.id)
 		if (matching.length !== 1)
 			throw Error(
-				"First PDF selection did not create one mapped reader: " +
+				"First native PDF read did not create one mapped reader: " +
 					JSON.stringify({ first, readers, source: await api.tabs.get(secondSource.id), sourceUrl }),
 			)
 		secondReader = Number(matching[0]![0])
+		// The browser never exposes a native-viewer selection's position, so the
+		// reader owns every selection and nothing is staged between tabs.
+		if (navigation(first)?.searchParams.has("selection") ?? true)
+			throw Error("Native PDF reading staged a selection handoff")
 		const beforeRepeat = await api.tabs.get(secondReader).catch(() => null)
-		const second = await invoke("Virtual Research Environment")
-		if (!second?.ok) throw Error("Second native PDF selection failed: " + JSON.stringify(second))
+		const second = await invoke()
+		if (!second?.ok) throw Error("Second native PDF read failed: " + JSON.stringify(second))
 		if (!second.omittedReaderUrls) throw Error("PDF reuse did not exercise missing reader Tab.url/pendingUrl")
-		const token = (result: Record<string, unknown>) => {
-			const trace = result.trace
-			if (!Array.isArray(trace)) return null
-			const navigation = trace
-				.map((entry: unknown) => record(entry))
-				.filter((entry) => entry.type === "update-tab" && typeof entry.url === "string")
-				.at(-1)
-			return typeof navigation?.url === "string" ? new URL(navigation.url).searchParams.get("selection") : null
-		}
-		const firstToken = token(first),
-			secondToken = token(second)
-		if (!firstToken || !secondToken || firstToken === secondToken)
-			throw Error("PDF selections did not get independent navigation tokens")
+		if (navigation(second)) throw Error("Repeated PDF reading navigated its reader again")
 		const updated = await readerMap()
 		const repeated = Object.entries(updated).filter(([, source]) => source === secondSource.id)
 		if (repeated.length !== 1 || Number(repeated[0]![0]) !== secondReader)
 			throw Error(
-				"Repeated PDF selections created another reader: " +
+				"Repeated PDF reads created another reader: " +
 					JSON.stringify({ first, second, beforeRepeat, readers, updated }),
 			)
 		for (let attempt = 0; attempt < 8; attempt++) {
@@ -356,11 +357,11 @@ async function checkPdfSelectionInBrowser() {
 		}
 		const concurrent = await Promise.all([invoke(), invoke()])
 		if (concurrent.some((result) => !result?.ok))
-			throw Error("Concurrent PDF selections failed: " + JSON.stringify(concurrent))
+			throw Error("Concurrent PDF reads failed: " + JSON.stringify(concurrent))
 		const afterConcurrent = await readerMap()
 		const remaining = Object.entries(afterConcurrent).filter(([, source]) => source === secondSource.id)
 		if (remaining.length !== 1 || Number(remaining[0]![0]) !== secondReader)
-			throw Error("Concurrent PDF selections lost their reader mapping")
+			throw Error("Concurrent PDF reads lost their reader mapping")
 		// A mapped tab the user has navigated away from belongs to that new page.
 		// Missing tab URLs must not cause us to overwrite it or mistake it for a reader.
 		navigatedReader = secondReader
@@ -378,28 +379,10 @@ async function checkPdfSelectionInBrowser() {
 				"A PDF command reused a tab that had navigated away: " + JSON.stringify({ replacement, replacementReaders }),
 			)
 		secondReader = Number(replacementReaders[0]![0])
-		// Simulate a reader closed before its latest staged selection is consumed.
-		await api.storage.session.set({
-			["pdfSelection:" + secondReader + ":" + crypto.randomUUID()]: "pending cleanup fixture",
-		})
 	} finally {
 		if (navigatedReader !== undefined) await api.tabs.remove(navigatedReader).catch(() => {})
 		if (secondReader !== undefined) await api.tabs.remove(secondReader).catch(() => {})
 		await api.tabs.remove(secondSource.id).catch(() => {})
-	}
-	if (secondReader !== undefined) {
-		const prefix = "pdfSelection:" + secondReader
-		const pendingKeys = async () => {
-			const keys =
-				typeof api.storage.session.getKeys === "function"
-					? await api.storage.session.getKeys()
-					: Object.keys(await api.storage.session.get(null))
-			return keys.filter((key) => key === prefix || key.startsWith(prefix + ":"))
-		}
-		const cleanupDeadline = performance.now() + 5000
-		while ((await pendingKeys()).length && performance.now() < cleanupDeadline)
-			await new Promise<void>((resolve) => setTimeout(resolve, 25))
-		if ((await pendingKeys()).length) throw Error("Closing the PDF reader left staged selection text")
 	}
 	await api.runtime.sendMessage({
 		type: "probe-context-menu",
@@ -417,13 +400,12 @@ async function checkPdfSelectionInBrowser() {
 	return {
 		toolbarReopensClosedControls: true,
 		contextMenuRestart: true,
-		repeatedNativeSelectionReusesReader: true,
+		repeatedNativeReadReusesReader: true,
 		missingReaderUrlDiscovery: true,
 		navigatedReaderNotReused: true,
-		nativeSelectionRepetitions: 10,
-		concurrentNativeSelectionReusesReader: true,
-		independentSelectionTokens: true,
-		closedSelectionCleanup: true,
+		nativeReadRepetitions: 10,
+		concurrentNativeReadReusesReader: true,
+		noNativeSelectionHandoff: true,
 		closedSessionRejected: true,
 		floatingControlsDoNotShiftPages: true,
 		crossPageCharacters: crossPage.length,

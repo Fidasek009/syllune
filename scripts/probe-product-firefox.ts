@@ -10,15 +10,7 @@ import { checkLiveSpeed, checkSpeedFocus, checkVolume, observePlayerAudio } from
 import { checkAbortedVoiceDeletion } from "./check-voice-deletion.ts"
 import { observeContextMenu } from "./observe-context-menu.ts"
 import { pageScript, readHighlightedText } from "./page-script.ts"
-import {
-	inspectPdf,
-	pdfReaderReady,
-	type PdfReaderState,
-	readCrossPageText,
-	readEarlyPdfSelection,
-	readPdfReaderState,
-	savePdfSelection,
-} from "./pdf-page.ts"
+import { inspectPdf, pdfReaderReady, type PdfReaderState, readPdfReaderState } from "./pdf-page.ts"
 import { assert, copyProbeExtension, projectRoot, waitFor } from "./probe-helpers.ts"
 import {
 	recoverSelectionAfterFailure,
@@ -559,25 +551,11 @@ try {
 	)
 	const pdfSelection = await script<{ exactSelection?: boolean }>(checkPdfSelection)
 	assert(pdfSelection.exactSelection, `Firefox PDF selection failed: ${JSON.stringify(pdfSelection)}`)
-	const crossPage = await script<string>(pageScript(readCrossPageText))
-	await script(pageScript(savePdfSelection, crossPage))
-	const pdfSelectionStarted = performance.now()
-	await run("/url", {
-		url: `moz-extension://${uuid}/pdf.html?src=${encodeURIComponent(pdfSource)}&mode=selection`,
-	})
-	const earlyText = await waitFor(
-		() => script<string>(pageScript(readEarlyPdfSelection)),
-		(value) => typeof value === "string" && value.length > 0,
-		30,
-	)
-	const pdfSelectionReadyMs = performance.now() - pdfSelectionStarted
-	assert(earlyText === crossPage, "Firefox early PDF selection changed its scope")
 	await waitFor(
 		() => script<number>("document.querySelector('iframe')?.contentWindow?.__probeAudio?.sources ?? 0"),
 		(value) => value > 0,
 		90,
 	)
-	const pdfFirstBufferMs = performance.now() - pdfSelectionStarted
 	await run("/window", { handle: voicesHandle })
 	assert(
 		await script(`browser.tabs.get(${originalPdf.id}).then(()=>true,()=>false)`),
@@ -597,8 +575,6 @@ try {
 				virtualAudio: Boolean(Bun.env.PULSE_SERVER),
 				pdf,
 				pdfSelection,
-				pdfSelectionReadyMs,
-				pdfFirstBufferMs,
 				passed: [
 					"no-voice state hides unusable controls",
 					"live installation recovers a stale preference",
@@ -617,7 +593,7 @@ try {
 					"pause",
 					"close",
 					"delete",
-					`${cachedPdf ? "cached" : "live"} MUNI PDF fetch/render/highlight with explicit test-origin grant`,
+					`${cachedPdf ? "cached" : "live"} MUNI PDF fetch/render/highlight/audio with explicit test-origin grant`,
 				],
 				limitations: [
 					"Scripted entry with localhost and MUNI test-origin grants; native activeTab/context menu and permission dialog not tested",

@@ -16,9 +16,8 @@ import { currentWordHighlight, paintReaderHighlight } from "../../reading/layout
 import { sourceChangedMessage } from "../../reading/messages.ts"
 import { normalizeDocument } from "../../reading/normalize.ts"
 import { fetchPdf } from "../../reading/pdf-access.ts"
-import { isPdfCommand, isPdfSelectionToken, type PdfCommand, pdfSelectionKey } from "../../reading/pdf-control.ts"
+import { isPdfCommand, type PdfCommand } from "../../reading/pdf-control.ts"
 import { destinationTop, externalLinkTarget, isPdfLinkAnnotation, linkRects } from "../../reading/pdf-links.ts"
-import { PdfSelectionSearch } from "../../reading/pdf-locate.ts"
 import { continuationStart, selectionBounds, sliceDocument } from "../../reading/selection.ts"
 import { ReaderSession } from "../../reading/session.ts"
 import { parsePdfReaders, readingKeys } from "../../reading/state.ts"
@@ -38,23 +37,17 @@ let frame: HTMLIFrameElement | undefined
 let tabId: number | undefined
 let alive = true
 let allowStart = true
-let initialSelection: string | undefined
 let pendingSelection: ReadingScope | undefined
 let pendingSelectionError: string | undefined
 let pendingWholeDocument = false
-let pendingSelectionKey: string | undefined
 /** Builds the remainder of the document after the scope that just finished. */
 let continuation: Continuation | undefined
-let locatedContinuation: Continuation | undefined
 const ownTab = browser.tabs.getCurrent().then((tab) => (tabId = tab?.id))
 
 // The document promise lets an explicit command wait for startup without
 // guessing whether fetching has finished.
 const documentReady = Promise.withResolvers<PDFDocumentProxy>()
 void documentReady.promise.catch(() => {})
-// A native-viewer handoff is playable only after its printed region is located.
-const selectionLocated = Promise.withResolvers<ReadingDocument>()
-void selectionLocated.promise.catch(() => {})
 
 interface PdfTextRun extends TextRun {
 	node: Text
@@ -414,12 +407,6 @@ async function takeSelection(): Promise<ReadingScope | undefined> {
 	return captured
 }
 
-function takeWholeDocumentSelection() {
-	const whole = pendingWholeDocument
-	pendingWholeDocument = false
-	return whole
-}
-
 document.addEventListener("selectionchange", captureSelection)
 pages.addEventListener("contextmenu", captureSelection)
 pages.addEventListener("pointerdown", (event) => {
@@ -505,7 +492,6 @@ function clearMapping() {
 function stop() {
 	clearMapping()
 	continuation = undefined
-	locatedContinuation = undefined
 	session.close()
 	frame?.remove()
 	frame = undefined
@@ -524,7 +510,7 @@ function fail(error: unknown) {
 	return message
 }
 
-async function start(mode: "article" | "selection", initial?: string): Promise<void> {
+async function start(mode: "article" | "selection"): Promise<void> {
 	// Any explicit request supersedes startup, including a rejected selection.
 	allowStart = false
 	let next: Continuation | undefined
@@ -533,11 +519,6 @@ async function start(mode: "article" | "selection", initial?: string): Promise<v
 			const source = await articleDocument()
 			if (!source.text.trim()) throw new Error("This PDF has no readable text layer.")
 			next = undefined
-			return source
-		}
-		if (initial) {
-			const source = await selectionLocated.promise
-			next = locatedContinuation
 			return source
 		}
 		const selected = await takeSelection()
@@ -571,10 +552,8 @@ async function handleCommand(command: PdfCommand) {
 		frame.focus()
 		return
 	}
-	const whole = command.mode === "selection" && takeWholeDocumentSelection()
-	const mode = whole ? "article" : command.mode
-	const reading = start(mode)
-	if (mode === "article" && !articleBuilt) {
+	const reading = start(command.mode)
+	if (command.mode === "article" && !articleBuilt) {
 		// Accept preparation without holding the background's routing lock until
 		// indexing finishes. A newer selection/stop can invalidate this request.
 		void reading.catch(fail)
@@ -737,7 +716,6 @@ window.addEventListener(
 		stop()
 		observer.disconnect()
 		for (const renderer of pageStates) renderer.task?.cancel()
-		if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
 		void pdfTask?.destroy()
 	},
 	{ once: true },
@@ -789,80 +767,6 @@ async function continuationDocument(pageNumber: number, offset: number): Promise
 	return next.text.trim() ? next : undefined
 }
 
-/** Fill page geometry in the background so the viewer scrolls like a normal document. */
-async function fillPageShells() {
-	const pdf = await documentReady.promise
-	while (alive && pageStates.length < pdf.numPages) {
-		await pageThrough(pageStates.length + 1)
-		await yieldToMain()
-	}
-}
-
-function scrollToSelected(scope: ReadingDocument) {
-	const range = sourceRange(scope, 0, 1)
-	const rect = range?.getClientRects()[0] ?? range?.getBoundingClientRect()
-	if (rect) scrollBy({ top: rect.top - innerHeight * 0.35, behavior: "instant" })
-}
-
-async function locateInitialSelection(selection: string, revision: number) {
-	const pdf = await documentReady.promise
-	const search = new PdfSelectionSearch(selection)
-	locatedContinuation = undefined
-	status.setAttribute("aria-live", "off")
-	try {
-		for (let number = 1; number <= pdf.numPages; number++) {
-			if (!alive || !session.isCurrent(revision)) {
-				selectionLocated.resolve({ text: "", runs: [] })
-				return
-			}
-			status.textContent = `Finding your selection · ${number} of ${pdf.numPages}`
-			const state = await pageThrough(number)
-			await ensureContent(state)
-			if (number === 1) await ensureText(state).catch(() => {})
-			const match = search.push(state.text)
-			if (!match) {
-				await yieldToMain()
-				continue
-			}
-			const from = match.startPage + 1
-			const to = match.endPage + 1
-			try {
-				for (let page = from; page <= to; page++) await ensureText(await pageThrough(page))
-			} catch (cause) {
-				throw new Error("This selection could not be prepared for highlighting. Reload the PDF and try again.", {
-					cause,
-				})
-			}
-			const parts: ReadingDocument[] = []
-			let end = match.end
-			for (let page = from; page <= to; page++) {
-				const part = pageDocument(await pageThrough(page))
-				if (page < to) end += part.text.length
-				parts.push(part)
-			}
-			// The located printed span is the only reading source. Speaking the native
-			// copy while highlighting the printed text lets the two drift apart.
-			const scope = normalizeDocument(sliceDocument(concatDocuments(parts), match.start, end), true)
-			if (!session.isCurrent(revision) || !alive) {
-				selectionLocated.resolve({ text: "", runs: [] })
-				return
-			}
-			scrollToSelected(scope)
-			status.textContent = ""
-			status.setAttribute("aria-live", "polite")
-			locatedContinuation = () => continuationDocument(to, match.end)
-			selectionLocated.resolve(scope)
-			return
-		}
-		selectionLocated.reject(
-			new Error("This selection could not be located in the PDF. Select it in this reader and try again."),
-		)
-	} catch (error) {
-		selectionLocated.reject(error)
-		throw error
-	}
-}
-
 async function load() {
 	const raw = params.get("src")
 	if (!raw) throw new Error("Open a PDF and choose Syllune from the browser toolbar.")
@@ -874,26 +778,6 @@ async function load() {
 		if (parsePdfReaders(stored[readingKeys.pdfReaders])[tabId] !== Number(params.get("source"))) {
 			allowStart = false
 			status.textContent = "Reading stopped because the original PDF changed or closed."
-		}
-	}
-	let locationRevision = 0
-	let wouldLocate = false
-	if (params.get("mode") === "selection" && tabId !== undefined) {
-		const token = params.get("selection")
-		if (token !== null && !isPdfSelectionToken(token)) throw new Error("This PDF selection could not be opened.")
-		const name = pdfSelectionKey(tabId, token ?? undefined)
-		pendingSelectionKey = name
-		const stored = await browser.storage.session.get(name)
-		await browser.storage.session.remove(name)
-		pendingSelectionKey = undefined
-		if (typeof stored[name] !== "string" || !stored[name].trim())
-			throw new Error("The PDF selection is no longer available. Select it in this reader and try again.")
-		initialSelection = stored[name]
-		if (allowStart && alive) {
-			const reading = start("selection", initialSelection)
-			locationRevision = session.revision
-			wouldLocate = true
-			void reading.catch(fail)
 		}
 	}
 	GlobalWorkerOptions.workerSrc = new URL("/pdf-runtime/pdf.worker.mjs", location.href).href
@@ -956,19 +840,10 @@ async function load() {
 		throw error
 	})
 	documentReady.resolve(pdf)
-	// The opening page is the viewer, and for a native selection it is also the
-	// first candidate for locating the selected passage.
+	// The opening page is the viewer and the first surface that can take a selection.
 	const first = await pageThrough(1)
 	await ensureText(first).catch(() => {})
 	status.textContent = ""
-	if (wouldLocate && initialSelection) {
-		void locateInitialSelection(initialSelection, locationRevision)
-			.catch(fail)
-			.finally(() => {
-				if (alive && !articlePromise) void fillPageShells().catch(() => {})
-			})
-		return
-	}
 	if (allowStart && alive) {
 		void start("article").catch(fail)
 	}
@@ -976,7 +851,5 @@ async function load() {
 
 void load().catch((error) => {
 	documentReady.reject(error)
-	selectionLocated.reject(error)
-	if (pendingSelectionKey) void browser.storage.session.remove(pendingSelectionKey)
 	fail(error)
 })

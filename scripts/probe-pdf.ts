@@ -10,17 +10,7 @@ import { checkPdfZoom, type PdfZoomResult } from "./check-pdf-zoom.ts"
 import { observePlayerAudio } from "./check-player-controls.ts"
 import { observeContextMenu } from "./observe-context-menu.ts"
 import { pageScript } from "./page-script.ts"
-import {
-	highlightPdfText,
-	inspectDistantPdf,
-	inspectPdf,
-	pdfReaderReady,
-	type PdfReaderState,
-	readCrossPageText,
-	readEarlyPdfSelection,
-	readPdfReaderState,
-	savePdfSelection,
-} from "./pdf-page.ts"
+import { inspectDistantPdf, inspectPdf, pdfReaderReady, type PdfReaderState, readPdfReaderState } from "./pdf-page.ts"
 import {
 	chromeExtensionId,
 	closeChromeProbe,
@@ -197,42 +187,10 @@ async function probe() {
 			Boolean,
 		)
 
-		const crossPage = speechCheck ? await view.evaluate<string>(pageScript(readCrossPageText)) : undefined
 		const speech = speechCheck ? await view.evaluate(pdfSpeechCheck(server.url.href)) : undefined
 		if (speechCheck) console.log("Cross-page neural speech:", JSON.stringify(speech))
 		if (speechCheck) await view.evaluate(pageScript(provisionPdfVoice, server.url.href))
 		const articleChecksElapsedMs = performance.now() - started
-		const initialText = crossPage ?? "Their day-to-day use is nev-\nertheless constrained by four limitations"
-		await view.evaluate(pageScript(savePdfSelection, initialText))
-		const selectionStarted = performance.now()
-		await view.navigate(`chrome-extension://${id}/pdf.html?src=${encodeURIComponent(source)}&mode=selection`)
-		const earlySelection = await waitFor(
-			() => view.evaluate<string>(pageScript(readEarlyPdfSelection)),
-			(value) => value.length > 0,
-		)
-		const selectionReadyMs = performance.now() - selectionStarted
-		if (earlySelection !== (crossPage ?? "Their day-to-day use is nevertheless constrained by four limitations"))
-			throw new Error(`Early PDF selection changed its scope: ${JSON.stringify(earlySelection)}`)
-		let firstBufferMs: number | undefined
-		if (speechCheck) {
-			await waitFor(
-				() => view.evaluate<number>("document.querySelector('iframe')?.contentWindow?.__probeAudio?.sources ?? 0"),
-				(value) => value > 0,
-			)
-			firstBufferMs = performance.now() - selectionStarted
-		}
-		await waitFor(
-			() =>
-				view.evaluate<boolean>(
-					"document.querySelector('#status')?.textContent === '' && !!document.querySelector('iframe')",
-				),
-			Boolean,
-		)
-		const mapped = await view.evaluate<string>(
-			pageScript(highlightPdfText, speechCheck ? "This work was supported" : "nevertheless", speechCheck ? 4 : 12),
-		)
-		if (mapped.replace(/[-\s]/gu, "") !== (speechCheck ? "This" : "nevertheless"))
-			throw new Error(`Early selection did not acquire an exact highlight mapping: ${JSON.stringify(mapped)}`)
 		const record = {
 			recordedAt: new Date().toISOString(),
 			browser: await view.cdp("Browser.getVersion"),
@@ -243,8 +201,6 @@ async function probe() {
 			distant,
 			selection,
 			indexingChecks,
-			selectionReadyMs,
-			firstBufferMs,
 			speech,
 			navigationMs,
 			articleReadyMs,

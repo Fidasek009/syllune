@@ -62,29 +62,3 @@ export function selectionBounds(source: ReadingDocument, range: Range | null): {
 	if (start === undefined || end === undefined) throw new Error("Select some PDF text first.")
 	return { start, end }
 }
-
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
-const hyphen = /[-\u2010\u2011\u00ad]/u
-
-/**
- * Browser PDF viewers copy spacing, hyphens and Unicode forms differently from
- * PDF.js. Match only the remaining characters; each key character keeps the raw
- * offset of the grapheme it came from.
- */
-export function matchText(text: string) {
-	let value = "",
-		offset = 0
-	const positions: number[] = []
-	const ends: number[] = []
-	for (const { segment: character } of graphemes.segment(text)) {
-		if (!/\s/u.test(character))
-			for (const unit of character.normalize("NFKC").split("")) {
-				if (hyphen.test(unit)) continue
-				positions.push(offset)
-				ends.push(offset + character.length)
-				value += unit
-			}
-		offset += character.length
-	}
-	return { value, positions, ends }
-}

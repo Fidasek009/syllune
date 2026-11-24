@@ -11,14 +11,6 @@ export function isPdfCommandResult(value: unknown): value is PdfCommandResult {
 	)
 }
 
-export function pdfSelectionKey(tabId: number, token?: string): string {
-	return `pdfSelection:${tabId}${token ? `:${token}` : ""}`
-}
-
-export function isPdfSelectionToken(token: string): boolean {
-	return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(token)
-}
-
 export function isPdfCommand(value: unknown): value is PdfCommand {
 	if (
 		!value ||

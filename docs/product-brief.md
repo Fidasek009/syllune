@@ -118,6 +118,10 @@ Preserve meaningful dots in domains such as `consensus.app`, where “dot” sho
 
 Pressing Play after a selection finishes continues with the text after the selection on web pages and in the PDF reader. The new scope extends to the end of the article or PDF, and Play after that replays the scope. Continuation starts only when the user presses Play.
 
+## PDF selections are read in Syllune's reader — 2026-11-24
+
+Chrome and Firefox expose only the selected string from their built-in PDF viewers, never the page or coordinates of the selection, and neither viewer can be scripted. Syllune no longer maps that string back into the document. A PDF opened from the native viewer opens the extension's reader tab, and only selections made there are read, so a selection cannot resolve to a different occurrence of the same text. Selecting in the native viewer and having that selection read directly is not supported.
+
 ## Reading polish and recovery — 2026-11-01
 
 - Shorten redundant language-region labels. Preserve the region when it distinguishes available catalog locales, including English. Keep the overlay voice picker compact.
