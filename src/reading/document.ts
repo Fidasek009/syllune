@@ -46,6 +46,7 @@ export function overlappingRuns(source: ReadingDocument, start: number, end: num
 	return result
 }
 
+export const emptyDocumentMessage = "No readable text was found on this page."
 const pageTooLong = "This page is too long to read in one session. Select a smaller section."
 const remainderTooLong =
 	"The rest of this page is too long to read in one session. Select a smaller section to continue."
@@ -104,7 +105,7 @@ export function captureDocument(mode: "selection" | "article"): ReadingDocument 
 	let root: Node = range?.commonAncestorContainer ?? articleRoot()
 	if (root.nodeType === Node.TEXT_NODE) root = root.parentNode!
 	const captured = capture(root, range, mode === "article")
-	if (!captured) throw new Error("No readable text was found on this page.")
+	if (!captured) throw new Error(emptyDocumentMessage)
 	return captured
 }
 

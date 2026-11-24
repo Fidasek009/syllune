@@ -1,4 +1,5 @@
 import { isReaderRequest, type ReaderRequest } from "./host.ts"
+import { isEmbeddedPdfUrl } from "./pdf-embed.ts"
 
 export const readingMessages = {
 	reader: "reader",
@@ -48,4 +49,15 @@ export function isStartReadingMessage(value: unknown): value is StartReadingMess
 
 export function isSourceChangedMessage(value: unknown): value is SourceChangedMessage {
 	return !!value && typeof value === "object" && "type" in value && value.type === readingMessages.sourceChanged
+}
+
+/** The source page hosts the PDF in a viewer frame, so the reader opens that document instead. */
+export function isEmbeddedPdfResult(value: unknown): value is { pdf: string } {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		"pdf" in value &&
+		typeof value.pdf === "string" &&
+		isEmbeddedPdfUrl(value.pdf)
+	)
 }
