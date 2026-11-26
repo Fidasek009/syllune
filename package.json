@@ -41,7 +41,7 @@
 		"previews:package": "bun scripts/package-voice-previews.ts"
 	},
 	"devDependencies": {
-		"@types/bun": "1.4.4",
+		"@types/bun": "1.4.5",
 		"@webgpu/types": "0.1.74",
 		"protobufjs": "8.8.1",
 		"typescript": "7.0.2",
