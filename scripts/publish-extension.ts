@@ -2,27 +2,23 @@ import { assertLicenseMaterials } from "./check-licenses"
 import { buildVersion, parseVersion } from "./release-version"
 
 // Chrome uses WXT; Firefox uses Mozilla's client for first listings and updates.
-export function submissionArgs(browser: string, version: string, dryRun: boolean) {
+export function chromeSubmissionArgs(version: string, dryRun: boolean) {
 	parseVersion(version, !dryRun)
-	if (browser !== "chrome") throw new Error("WXT submission is only used for Chrome")
-	const args = [
+	return [
 		"submit",
 		"--dry-run",
 		String(dryRun),
-		`--${browser}-zip`,
-		`.output/read-aloud-${version}-${browser}.zip`,
-		`--${browser}-skip-submit-review`,
+		"--chrome-zip",
+		`.output/read-aloud-${version}-chrome.zip`,
+		"--chrome-skip-submit-review",
 		"false",
-	]
-	args.push(
 		"--chrome-api-version",
 		"v2",
 		"--chrome-cancel-pending",
 		"false",
 		"--chrome-publish-type",
 		"DEFAULT_PUBLISH",
-	)
-	return args
+	]
 }
 
 if (import.meta.main) {
@@ -31,7 +27,6 @@ if (import.meta.main) {
 	const dryRun = mode === "--dry-run"
 	const version = buildVersion()
 	if (browser !== "chrome" && browser !== "firefox") throw new Error("Expected chrome or firefox")
-	parseVersion(version, !dryRun)
 	if (!dryRun) {
 		await assertLicenseMaterials()
 		if (process.env.GITHUB_REF_TYPE !== "tag" || process.env.GITHUB_REF_NAME !== `v${version}`)
@@ -48,7 +43,7 @@ if (import.meta.main) {
 		})
 		process.exit(0)
 	}
-	const args = submissionArgs(browser, version, dryRun)
+	const args = chromeSubmissionArgs(version, dryRun)
 	const child = Bun.spawn([process.execPath, "--bun", "run", "wxt", ...args], { stdout: "inherit", stderr: "inherit" })
 	process.exit(await child.exited)
 }

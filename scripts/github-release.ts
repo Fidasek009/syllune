@@ -16,19 +16,20 @@ const runGh: Run = async (args) => {
 	return { exitCode: await child.exited, stdout }
 }
 
-export async function publishRelease(tag: string, files: string[], notes: string, run: Run = runGh) {
+export async function publishRelease(tag: string, files: string[], run: Run = runGh) {
 	async function checked(args: string[]) {
 		const result = await run(args)
 		if (result.exitCode !== 0) throw new Error(`GitHub release command failed: ${args.slice(0, 2).join(" ")}`)
 		return result.stdout
 	}
-	let view = await run(["release", "view", tag, "--json", "isDraft,assets"])
-	if (view.exitCode !== 0) {
+	const view = await run(["release", "view", tag, "--json", "isDraft,assets"])
+	let json = view.exitCode === 0 ? view.stdout : ""
+	if (!json) {
 		// Notes generation happens before assets/publication. A failed creation is safe to retry.
-		await checked(["release", "create", tag, "--draft", "--verify-tag", "--generate-notes", "--notes-file", notes])
-		view = { exitCode: 0, stdout: await checked(["release", "view", tag, "--json", "isDraft,assets"]) }
+		await checked(["release", "create", tag, "--draft", "--verify-tag", "--generate-notes"])
+		json = await checked(["release", "view", tag, "--json", "isDraft,assets"])
 	}
-	const release = JSON.parse(view.stdout) as { isDraft: boolean; assets: { name: string }[] }
+	const release = JSON.parse(json) as { isDraft: boolean; assets: { name: string }[] }
 	if (release.isDraft) {
 		await checked(["release", "upload", tag, ...files, "--clobber"])
 		await checked(["release", "edit", tag, "--draft=false", "--latest"])
@@ -67,16 +68,12 @@ if (import.meta.main) {
 		.sort()
 	if (JSON.stringify(zips) !== JSON.stringify(expected))
 		throw new Error("Release artifacts do not match the tag version")
-	const checksums = []
-	for (const file of zips)
-		checksums.push(
-			`${new Bun.CryptoHasher("sha256").update(await Bun.file(file).arrayBuffer()).digest("hex")}  ${basename(file)}`,
-		)
-	await Bun.write("artifacts/SHA256SUMS", `${checksums.join("\n")}\n`)
-	const notes = "artifacts/release-notes.md"
-	await Bun.write(
-		notes,
-		"Both store submissions succeeded. Store review may still be pending; this release does not imply store approval. The Firefox ZIP is unsigned; install Firefox releases through AMO.\n",
+	const sums = await Promise.all(
+		zips.map(
+			async (file) =>
+				`${new Bun.CryptoHasher("sha256").update(await Bun.file(file).arrayBuffer()).digest("hex")}  ${basename(file)}`,
+		),
 	)
-	await publishRelease(tag, [...zips, "artifacts/SHA256SUMS"], notes)
+	await Bun.write("artifacts/SHA256SUMS", `${sums.join("\n")}\n`)
+	await publishRelease(tag, [...zips, "artifacts/SHA256SUMS"])
 }

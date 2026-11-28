@@ -8,7 +8,7 @@ For the existing **0.1.1** draft. Do not upload another ZIP or create another it
 4. In **Distribution**, choose **Public** and your intended countries. Save. Complete any publisher identity/trader-status questions using your actual circumstances.
 5. Click **Why can't I publish?** beside the submission button. Resolve any remaining listed errors. Share their exact wording with the agent if needed.
 6. Once there are no errors, click **Submit for review** for the existing **0.1.1** draft and choose **automatic publication after approval**. This one-time dashboard submission is necessary when establishing the item's distribution settings. Do not select deferred/manual publication.
-7. Tell the agent it is submitted. The recovery workflow will verify Chrome's version/status, finish Firefox metadata and publish the GitHub release with the original CI artifacts. Future release tags use the ordinary automatic pipeline.
+7. Tell the agent it is submitted. Future release tags use the automatic pipeline.
 
 ## Store listing
 

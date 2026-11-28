@@ -32,8 +32,13 @@ export function validateRelease(tag: string, previousTags: string[]): string {
 	const version = versionFromTag(tag)
 	const current = parseVersion(version, true)
 	for (const previousTag of previousTags) {
-		if (previousTag === tag || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(previousTag)) continue
-		const previous = parseVersion(previousTag.slice(1))
+		if (previousTag === tag) continue
+		let previous: number[]
+		try {
+			previous = parseVersion(versionFromTag(previousTag))
+		} catch {
+			continue // Not a stable release tag.
+		}
 		const difference = current.findIndex((part, index) => part !== previous[index])
 		if (difference < 0 || current[difference]! < previous[difference]!)
 			throw new Error(`Release ${tag} must be newer than ${previousTag}`)

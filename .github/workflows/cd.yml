@@ -1,6 +1,7 @@
 name: CD
 
-# Both callers run CI first. Manual Store check always requests dry-run.
+# Callers supply the CI artifacts of the run being published. Manual Store check
+# always requests dry-run.
 on:
   workflow_call:
     inputs:
@@ -10,19 +11,12 @@ on:
       store:
         type: string
         default: all
-      recovery-tag:
-        type: string
-        default: ""
-      recovery-run-id:
-        type: string
-        default: ""
 
 permissions:
   contents: read
 
 jobs:
   preflight:
-    if: inputs.recovery-tag == ''
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -58,7 +52,6 @@ jobs:
           fi
           if test "$STORE" != chrome; then
             keys+=(FIREFOX_EXTENSION_ID FIREFOX_JWT_ISSUER FIREFOX_JWT_SECRET)
-            test "$FIREFOX_EXTENSION_ID" != 'read-aloud@local.invalid'
           fi
           for key in "${keys[@]}"; do
             test -n "${!key}" || { echo "Missing publishing configuration: $key"; exit 1; }
@@ -98,7 +91,7 @@ jobs:
 
   publish:
     name: Publish (${{ matrix.browser }})
-    if: ${{ !inputs.dry-run && inputs.recovery-tag == '' }}
+    if: ${{ !inputs.dry-run }}
     needs: preflight
     runs-on: ubuntu-26.04
     permissions:
@@ -148,69 +141,3 @@ jobs:
           FIREFOX_EXTENSION_ID: ${{ vars.FIREFOX_EXTENSION_ID }}
           FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
           FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
-
-  recover:
-    if: inputs.recovery-tag != ''
-    runs-on: ubuntu-26.04
-    timeout-minutes: 90
-    environment: stores
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ inputs.recovery-tag }}
-      RELEASE_RUN_ID: ${{ inputs.recovery-run-id }}
-      STORE: ${{ inputs.store }}
-    steps:
-      - name: Restrict recovery to manual dispatch on the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REF_TYPE" = branch
-          test "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH"
-          case "$STORE" in firefox|all) ;; *) exit 1 ;; esac
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: package.json
-      - run: bun install --frozen-lockfile
-      - name: Verify original CI run and immutable tag
-        run: bun scripts/check-release-recovery.ts
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.recovery-tag }}
-          path: release-input
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.recovery-run-id }}
-          name: extension-firefox
-          path: release-input/.output
-      - name: Obtain short-lived Chrome status token
-        if: inputs.store == 'all'
-        id: chrome-auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          workload_identity_provider: ${{ vars.CHROME_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.CHROME_SERVICE_ACCOUNT_EMAIL }}
-          token_format: access_token
-          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
-          access_token_lifetime: 1800s
-          create_credentials_file: false
-          export_environment_variables: false
-      - name: Repair accepted Firefox metadata and verify existing Chrome submission
-        run: bun scripts/recover-store-release.ts
-        env:
-          FIREFOX_EXTENSION_ID: ${{ vars.FIREFOX_EXTENSION_ID }}
-          FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
-          FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
-          CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
-          CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
-          CHROME_SERVICE_ACCOUNT_ACCESS_TOKEN: ${{ steps.chrome-auth.outputs.access_token }}
